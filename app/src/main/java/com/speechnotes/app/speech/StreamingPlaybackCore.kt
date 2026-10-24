@@ -2,6 +2,7 @@ package com.speechnotes.app.speech
 
 import com.speechnotes.app.data.LogStore
 import com.speechnotes.app.logic.Chunk
+import com.speechnotes.app.logic.ChunkSchedule
 import com.speechnotes.app.logic.SentenceChunker
 import com.speechnotes.app.logic.TextHash
 import com.speechnotes.app.logic.WavWriter
@@ -40,11 +41,22 @@ class StreamingPlaybackCore(
         val sampleRate: Int,
         val chunkMaxChars: Int,
         /**
-         * Cap for the FIRST chunk only. Neural engines pay ~1 s of inference per
-         * 10 characters, so a full-size opener costs many seconds of silence
-         * after the tap; the rest of the utterance stays full-size.
+         * Cap for the FIRST chunk only — the FALLBACK opener size when no
+         * [ChunkSchedule.State] is wired. With a schedule the schedule owns
+         * the opener size (its audio-seconds target converted to a character
+         * budget from the engine's measured speaking rate, clamped to
+         * [chunkMaxChars]); this fixed value is the pre-schedule behavior
+         * that lost the break-even race on any engine whose RTF exceeded
+         * firstChunkMaxChars / chunkMaxChars.
          */
         val firstChunkMaxChars: Int = chunkMaxChars,
+        /**
+         * The seconds-based opener schedule (iOS ChunkSchedule, afdc1d1),
+         * owned by the engine so its learned target and measured
+         * chars-per-audio-second persist across sessions. null = the fixed
+         * [firstChunkMaxChars] opener.
+         */
+        val schedule: ChunkSchedule.State? = null,
         /**
          * Seconds of generated-but-unplayed audio the pipeline may hold ahead
          * of the playhead (RenderAheadBankPolicy). Replaces the old chunk-count
@@ -86,6 +98,37 @@ class StreamingPlaybackCore(
      */
     @Volatile
     private var lastChunkRenderSeconds: Double = 0.0
+
+    // MARK: Session metrics for the chunk schedule (ChunkSchedule.State).
+    // Written on the generate queue (inside schedule()), read on main when
+    // the session ends (finish/stop → reportToSchedule). @Volatile gives the
+    // cross-thread visibility; single-writer, so no other sync is needed.
+
+    /** Successful buffers scheduled so far this session (0 = none yet). */
+    @Volatile
+    private var scheduledBufferCount = 0
+
+    /** When the FIRST successful buffer was scheduled (nanoTime; -1 = none). */
+    @Volatile
+    private var firstBufferAtNanos = -1L
+
+    /** When the SECOND successful buffer was scheduled (nanoTime; -1 = none). */
+    @Volatile
+    private var secondBufferAtNanos = -1L
+
+    /** The audio the first successful buffer carried — the opener's actual
+     *  reach, in the unit the gap is measured in. */
+    @Volatile
+    private var firstBufferAudioSeconds = 0.0
+
+    /** The characters the first successful buffer carried — learns this
+     *  engine's chars-per-audio-second for the schedule. */
+    @Volatile
+    private var firstBufferChars = 0
+
+    /** True once this session's outcome has been fed to the schedule. */
+    @Volatile
+    private var sessionReportedToSchedule = false
 
     private var chunks: List<Chunk> = emptyList()
     private var scheduledUpTo = -1
@@ -138,15 +181,30 @@ class StreamingPlaybackCore(
         stop()
         generation++
         val g = generation
+        // The opener size. With a schedule, the schedule owns it: the
+        // character budget is derived from the schedule's audio-seconds
+        // target and the live rate, then clamped to this engine's batch
+        // ceiling (a bigger opener would be split by the chunker — two
+        // renders, not one fast one). Without a schedule, the engine's fixed
+        // firstChunkMaxChars. Main-thread confined: this read and the
+        // record() at session end are the schedule's only touches.
+        val openerSize = config.schedule?.openerCharacterBudget(
+            rate = speed.toDouble(),
+            batchCeiling = config.chunkMaxChars,
+        ) ?: config.firstChunkMaxChars
         val utteranceChunks = SentenceChunker.chunks(
             clean,
-            firstMaxChars = config.firstChunkMaxChars,
+            firstMaxChars = openerSize,
             // iOS StreamingTTSPlaybackCore:693 packs later chunks to exactly
             // chunkMaxChars — NOT a ×3 multiple. A ×3 batch (480 chars) can
             // phonemize past the engine's MAX_TOKENS (Kokoro 510): the device
             // log hit "chunk 0 failed: token count 681" on a 137-word note,
             // and the whole utterance was then aborted.
             batchMaxChars = config.chunkMaxChars,
+            // With a schedule the opener COMPLETES by whole sentences up to
+            // the budget — a short first sentence no longer yields a short
+            // opener, which is what ran dry before the second buffer.
+            minOpenerChars = if (config.schedule != null) openerSize else 0,
         )
         chunks = utteranceChunks
         totalChars = maxOf(1, clean.length)
@@ -154,6 +212,14 @@ class StreamingPlaybackCore(
         scheduledUpTo = -1
         totalFramesWritten = 0
         trackStarted = false
+        // Fresh session metrics: the previous session was reported by the
+        // stop() above.
+        scheduledBufferCount = 0
+        firstBufferAtNanos = -1L
+        secondBufferAtNanos = -1L
+        firstBufferAudioSeconds = 0.0
+        firstBufferChars = 0
+        sessionReportedToSchedule = false
         running.set(true)
         paused.set(false)
         state = SpeechState.GENERATING
@@ -230,6 +296,20 @@ class StreamingPlaybackCore(
             gate.release()
             return
         }
+        // Schedule metrics (single-writer: the generate queue). The first
+        // and second SUCCESSFUL buffers define the wait the opener must
+        // cover — a failed chunk between them neither starts nor ends the
+        // measured interval.
+        val stampedAt = System.nanoTime()
+        when (scheduledBufferCount) {
+            0 -> {
+                firstBufferAtNanos = stampedAt
+                firstBufferAudioSeconds = samples.size / sampleRateHz.toDouble()
+                firstBufferChars = chunks.getOrNull(index)?.length ?: 0
+            }
+            1 -> secondBufferAtNanos = stampedAt
+        }
+        scheduledBufferCount++
         val track = ensureTrack(samples.size * 2)
         if (track == null) {
             LogStore.error("${config.logPrefix}: ensureTrack failed for chunk $index (${samples.size} samples)")
@@ -444,6 +524,10 @@ class StreamingPlaybackCore(
     }
 
     private fun finish() {
+        // Feed the schedule BEFORE the callbacks: an onFinished handler that
+        // starts the next chapter (book auto-advance) will size its opener
+        // from what THIS session just measured.
+        reportToSchedule()
         // IDLE before the callback: an onFinished handler that starts the
         // next chapter (book auto-advance) must win over the trailing
         // IDLE — the old order clobbered the fresh GENERATING state and
@@ -451,6 +535,46 @@ class StreamingPlaybackCore(
         state = SpeechState.IDLE
         running.set(false)
         onFinished?.invoke()
+    }
+
+    /**
+     * Feeds the session's outcome to the chunk schedule, so the NEXT session
+     * opens with a size that fits this engine's speed (iOS
+     * StreamingTTSPlaybackCore.reportToSchedule). Called on the main thread
+     * from finish() and stop() — a session the user cut short STILL measured
+     * whether the second buffer was late.
+     */
+    private fun reportToSchedule() {
+        val schedule = config.schedule ?: return
+        if (sessionReportedToSchedule) return
+        val wait: Double? = if (firstBufferAtNanos >= 0L && secondBufferAtNanos >= 0L) {
+            (secondBufferAtNanos - firstBufferAtNanos) / 1_000_000_000.0
+        } else {
+            null
+        }
+        val late: Boolean? = when {
+            wait == null || firstBufferAudioSeconds <= 0.0 -> null
+            else -> wait > firstBufferAudioSeconds
+        }
+        // Nothing was measured at all (the session produced no buffers) —
+        // there is no verdict to record; leave the flag clear so a
+        // subsequent stop in the same session can still report.
+        if (late == null && firstBufferAudioSeconds <= 0.0) return
+        sessionReportedToSchedule = true
+        schedule.record(
+            secondBufferWasLate = late,
+            chunk0AudioSeconds = firstBufferAudioSeconds.takeIf { it > 0.0 },
+            chunk0Characters = firstBufferChars.takeIf { it > 0 },
+            secondBufferSeconds = wait,
+            rate = speed.toDouble(),
+        )
+        val nextBudget = schedule.openerCharacterBudget(speed.toDouble(), config.chunkMaxChars)
+        val verdict = when (late) {
+            true -> "second buffer was LATE"
+            false -> "second buffer covered the first"
+            null -> "no second buffer"
+        }
+        LogStore.info("${config.logPrefix} chunk schedule — $verdict, ${schedule.summary}, next opener $nextBudget chars")
     }
 
     fun pause() {
@@ -471,6 +595,9 @@ class StreamingPlaybackCore(
     }
 
     fun stop() {
+        // The schedule learns from a user stop too: a session the user cut
+        // short STILL measured whether the second buffer was late.
+        reportToSchedule()
         generation++
         running.set(false)
         paused.set(false)
@@ -504,12 +631,20 @@ class StreamingPlaybackCore(
     fun exportWav(text: String, output: File, onProgress: (Double) -> Unit, onDone: (File?) -> Unit) {
         val clean = text.trim()
         if (clean.isEmpty()) { onDone(null); return }
+        // iOS renderWAV runs the same chunker as speak(): the schedule owns
+        // the opener size here too (an offline render has no deadline, so a
+        // big opener is free). Exports never feed the schedule back.
+        val openerSize = config.schedule?.openerCharacterBudget(
+            rate = speed.toDouble(),
+            batchCeiling = config.chunkMaxChars,
+        ) ?: config.firstChunkMaxChars
         val utteranceChunks = SentenceChunker.chunks(
             clean,
-            firstMaxChars = config.firstChunkMaxChars,
+            firstMaxChars = openerSize,
             // Same token-budget ceiling as playback — a ×3 batch blew past
             // Kokoro's MAX_TOKENS on the device (see the speak() comment).
             batchMaxChars = config.chunkMaxChars,
+            minOpenerChars = if (config.schedule != null) openerSize else 0,
         )
         val silenceSamples = (config.exportInterChunkSilence * sampleRateHz).toInt()
         generateQueue.execute {

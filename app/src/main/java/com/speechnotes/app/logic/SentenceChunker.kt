@@ -55,15 +55,62 @@ object SentenceChunker {
      * All chunks in order. First element is [firstChunk]; later pieces are
      * whole sentences packed greedily up to [batchMaxChars], with single
      * oversized sentences word-split so no chunk exceeds the cap.
+     *
+     * @param minOpenerChars The opener's MINIMUM size, in UTF-16 units.
+     *   `firstChunk` stops at the FIRST sentence that fits the cap, so a
+     *   text whose first sentence is short produces a short opener no matter
+     *   how large the cap is — and a short opener is exactly what runs out
+     *   of audio before the second buffer arrives (the audible gap the
+     *   chunk schedule exists to close). When this is > 0, whole following
+     *   sentences are appended to the opener until it reaches
+     *   `minOpenerChars` UTF-16 units, never past `batchMaxChars`.
+     *
+     *   The cap is `minOpenerChars` ITSELF, not `max(firstMaxChars,
+     *   minOpenerChars)`: `firstMaxChars` bounds the FIRST SENTENCE, and
+     *   folding it into the opener cap would let a large `firstMaxChars`
+     *   grow the opener far past what was asked for.
+     *
+     *   DEFAULT OFF (0): the opener is exactly `firstChunk(in:maxChars:)`,
+     *   so every existing behaviour — and the doc contract above — is
+     *   unchanged. Production callers opt in and pass the same value for
+     *   `firstMaxChars` and `minOpenerChars` — the opener's total size is
+     *   the budget, and the first sentence is merely where it starts.
      */
-    fun chunks(text: String, firstMaxChars: Int = 200, batchMaxChars: Int = 400): List<Chunk> {
-        val first = firstChunk(text, firstMaxChars) ?: return emptyList()
+    fun chunks(
+        text: String,
+        firstMaxChars: Int = 200,
+        batchMaxChars: Int = 400,
+        minOpenerChars: Int = 0,
+    ): List<Chunk> {
+        val maxBatch = maxOf(1, batchMaxChars)
+        val wantsCompletion = minOpenerChars > 0
+        // The opener's cap. `minOpenerChars` IS the opener's TOTAL size —
+        // the first sentence is merely where it starts. The batch ceiling is
+        // the hard cap on any chunk, so the opener never exceeds it.
+        val openerCap = if (wantsCompletion) minOf(maxOf(1, minOpenerChars), maxBatch) else 0
+        // The first sentence's own cap: the opener's cap when completion is
+        // on, so an inconsistent caller (a `firstMaxChars` above the engine's
+        // ceiling) cannot produce an oversized opener. Otherwise the caller's
+        // `firstMaxChars`, unchanged.
+        val firstCap = if (wantsCompletion) minOf(maxOf(1, firstMaxChars), openerCap) else firstMaxChars
+        val first = firstChunk(text, firstCap) ?: return emptyList()
         val result = ArrayList<Chunk>()
         result.add(first)
-        val maxBatch = maxOf(1, batchMaxChars)
         val minPieceLength = minOf(maxBatch, 4)
 
         var cursor = first.length
+
+        // Opener completion — opt-in (see the parameter docs). The opener
+        // grows by WHOLE following sentences, never by a cut, so it still
+        // ends at a sentence boundary the engine can speak cleanly.
+        if (wantsCompletion) {
+            val completed = completedOpenerEnd(text, first.length, openerCap, maxBatch)
+            if (completed != null) {
+                result[0] = chunkUtf16(text, 0, completed)
+                cursor = completed
+            }
+        }
+
         val pieces = ArrayList<Pair<Int, Int>>()
 
         while (cursor < text.length) {
@@ -171,6 +218,34 @@ object SentenceChunker {
             i++
         }
         return null
+    }
+
+    /**
+     * Extends an opener with WHOLE following sentences, up to [cap] UTF-16
+     * units in total, and returns where the next chunk must start.
+     *
+     * Only complete pieces are appended: a sentence that does not fit in the
+     * remaining budget is left whole for the next chunk, because a cut
+     * opener would end on a clipped word.
+     *
+     * Returns null when nothing could be appended — the opener stays as it
+     * was.
+     */
+    private fun completedOpenerEnd(text: String, firstLength: Int, cap: Int, maxBatchLength: Int): Int? {
+        if (cap <= firstLength) return null
+        if (firstLength >= text.length) return null
+        var cursor = firstLength
+        var used = firstLength
+        while (cursor < text.length) {
+            val end = sentenceEnd(text, cursor, text.length) ?: text.length
+            for (piece in splitOversized(text, cursor, end, maxBatchLength)) {
+                val pieceLength = piece.second - piece.first
+                if (used + pieceLength > cap) return cursor
+                used += pieceLength
+                cursor = piece.second
+            }
+        }
+        return cursor
     }
 
     /** End of the last whitespace run at or before [limit], or null. */

@@ -5,6 +5,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.speechnotes.app.data.LogStore
 import com.speechnotes.app.logic.AppFiles
+import com.speechnotes.app.logic.ChunkSchedule
 import com.speechnotes.app.logic.TextHash
 import com.speechnotes.app.model.VoiceCatalog
 import org.json.JSONObject
@@ -69,14 +70,23 @@ class KokoroEngine(
             config = StreamingPlaybackCore.Config(
                 sampleRate = 24_000,
                 chunkMaxChars = 160,
-                // iOS OnnxKokoroEngine.swift:131. Batch B3 measured this as
-                // `RTF · c1` with RTF assumed 0.53 (TTS_BASELINE §2); the
-                // real RTF printed per session settles it. If measured RTF
-                // ≥ 1.0 the fast-start premise is dead — no legal
-                // firstMaxChars reaches break-even against a 160-char
-                // chunkMaxChars — and the bank becomes the primary fix.
-                // The two exist side by side for now.
+                // Fallback opener only — the seconds-based schedule below owns
+                // the opener now. The fixed 100 chars lost the break-even race
+                // on any device whose RTF exceeded 100/160 = 0.625: the opener
+                // ran dry before the second buffer rendered (the audible gap
+                // heard as "TTS stopped"). Kept for the no-schedule path.
                 firstChunkMaxChars = 100,
+                // iOS OnnxKokoroEngine.swift:136 — the seconds-based chunk
+                // schedule, seeded from the iOS device log (second buffer
+                // 7.4 s after the first; ~16 chars per audio second). The
+                // opener target grows when a session's second buffer arrives
+                // late and settles just above the measured wait when covered;
+                // after its first session the schedule uses this engine's own
+                // measured chars-per-audio-second instead of the seed.
+                schedule = ChunkSchedule.State(
+                    targetSeconds = ChunkSchedule.initialTargetSeconds,
+                    fallbackCharactersPerAudioSecond = ChunkSchedule.kokoroCharactersPerAudioSecond,
+                ),
                 exportInterChunkSilence = 0.05f,
                 logPrefix = "KokoroEngine",
             ),
