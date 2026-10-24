@@ -383,7 +383,9 @@ class ModelManager(private val context: Context) {
 
     fun storageUsageFiles(): List<Pair<String, Long>> =
         listOf(
-            "Notes" to AppFiles.notesImagesDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
+            "Notes" to AppFiles.root.listFiles { f -> f.isFile && f.name.endsWith(".json") }
+                .orEmpty().filter { it.isFile }.sumOf { it.length() },
+            "Note images" to AppFiles.notesImagesDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
             "Exports" to AppFiles.exportsDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
             "Kokoro model" to AppFiles.kokoroDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },
             "Supertonic model" to AppFiles.supertonicDir.walkTopDown().filter { it.isFile }.sumOf { it.length() },

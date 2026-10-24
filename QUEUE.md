@@ -8,13 +8,13 @@ describes once the repo is on GitHub).
 
 **The Great Rewrite.** TTS fixed (Unit 1). Perf pass (Unit 2, release cold
 start 370 ms). Settings subpages (Unit 3). Kokoro-small quantized (Unit 4).
-**GitHub push DONE 2026-10-24 (Unit 5):**
-https://github.com/thesagezm/speechnotes-android (private, branch `main`).
-Now: **settings parity with iOS** per the user's 2026-10-24 instruction —
-"make sure all the settings (including stats) are on par to Speechnotes iOS
-or better; when they work and the app is also very fast, ask me and I can
-allow you to release a prerelease v0.0.1". Units 7–10 below close the gaps,
-then Waydroid verification, then ASK before the v0.0.1 tag.
+GitHub push (Unit 5). **Now: settings parity with iOS** per the user's
+2026-10-24 instruction — "make sure all the settings (including stats) are
+on par to Speechnotes iOS or better; when they work and the app is also very
+fast, ask me and I can allow you to release a prerelease v0.0.1".
+**Session status: Units 7, 8, 9 + crypto half of Unit 10 code-complete and
+pushed; Unit 10's vault/UI half + ALL Waydroid verification are the next
+session's work (see Session Handover).** Then ask the user for v0.0.1.
 
 ## User Feedback Pending
 
@@ -44,19 +44,24 @@ commit and `git push` after verify.
 
 ## In Flight / Last Push
 
-- Unit 7 (Speech settings parity) starting.
+- **Unit 10 (Encryption vault) is HALF-DONE:** `logic/JoplinCrypto.kt` +
+  12-test suite (with independent Python-sealed interop vectors) are in and
+  green. The vault object, NotesStore seal/unseal, the settings page and the
+  notes locked-state UI are NOT started — exact steps in Session Handover.
 
 ## Pending Queue
 
-1. **Unit 7 — Speech settings parity (S1–S3, from Unit 6 audit).**
-2. **Unit 8 — Stats parity (T1–T5).** 3. **Unit 9 — Storage note-images
-   cleanup (ST1).** 4. **Unit 10 — Encryption vault (E1, P0-4).**
-5. **Waydroid verification of Units 7–10 + release cold-start re-check,
-   then ASK the user for the v0.0.1 prerelease go-ahead.**
-6. **P1 — neural playback start-stall watchdog (never-started variant)**
+1. **Finish Unit 10** (see Session Handover step-by-step).
+2. **Waydroid verification of Units 7–10 in one pass + release cold-start
+   re-check.** 3. **ASK the user for the v0.0.1 prerelease go-ahead.**
+4. **P1 — neural playback start-stall watchdog (never-started variant)**
    (evidence in Completed Units, Unit 5-note).
-7. P0-1 (editor preview lock-in), P0-3 (.jex image round-trip), then the
+5. P0-1 (editor preview lock-in), P0-3 (.jex image round-trip), then the
    state-report P0/P1 list in order.
+6. Deferred from the audit (recorded, not settings): LocalSend sender
+   (P1-3), Web-import paywall bypass (Safari/Readability-specific — record
+   as divergence), .jex per-note Joplin E2EE cipher for encrypted exports,
+   books long-press menu, swipe actions.
 
 ### Unit 6 audit — settings gaps vs iOS (2026-10-24)
 
@@ -100,6 +105,75 @@ iOS reference: `~/speechnotes-ios`
 
 ## Session Handover
 
+- **Environment**: Waydroid was STOPPED at handover (`waydroid status`);
+  start it, `adb connect <waydroid-ip>:5555`, install the fresh x86_64
+  debug split. App installed previously has NONE of Units 7–10. If adb shows
+  `unauthorized`: copy `~/.android/adbkey.pub` to
+  `~/.local/share/waydroid/data/misc/adb/adb_keys`, then `waydroid session
+  stop` + `waydroid show-full-ui` + `adb connect`. `run-as`/`su` do NOT work.
+- **JDK 17**: `export JAVA_HOME=~/tools/jdk-17.0.13+11`.
+  Disk was 93% at handover (34 GB free). One gradle at a time, foreground,
+  with timeout. Never start an AVD/emulator.
+- **Tests**: 90 green at handover (78 old + 12 JoplinCryptoTest).
+- **Finish Unit 10 — remaining steps** (crypto is done; iOS references in
+  brackets):
+  1. `data/EncryptionVault.kt` — object with `isEnabled` (wrapped key
+     exists), `isUnlocked`, in-memory `master`/`id` [iOS EncryptionVault.swift].
+     Store the KeyV1 envelope in `filesDir/vault.key`, DOUBLE-wrapped under
+     an Android Keystore AES-256-GCM key (alias "speechnotes_vault",
+     StrongBox off; generate on first use, cipher iv||ct||tag base64) —
+     that is the Android equivalent of the iOS keychain
+     ThisDeviceOnly: a backup restored to another device cannot unwrap.
+     API: `create(passphrase)` (≥8 chars → makeMasterKey + encryptMasterKey
+     + persist), `unlock(passphrase)` (read + keystore-unwrap + KeyV1
+     unwrap), `lock()`, `disable()`, `encryptText/decryptText`,
+     `storedEnvelope()` [JoplinVaultKeyMaterial.swift is 1:1 mappable].
+     Expose as a StateFlow-able holder for the UI.
+  2. `data/NotesStore.kt` integration [NotesStore.swift:265-440]: save path
+     (writer thread): if vault unlocked → JSON bytes → `JoplinCrypto
+     .encryptString(jsonText, master, id)` → write envelope UTF-8; if vault
+     LOCKED and file is sealed → SKIP the write (never downgrade a sealed
+     file — stricter than iOS, deliberate); if off → plain as today. Load
+     path: bytes starting with "JED01"/"JED02" → sealed: if unlocked →
+     decrypt to text bytes → parse JSON; if locked → `fileIsSealed=true`,
+     empty list, DO NOT quarantine the file. `resealWithCurrentVault
+     (forcePlain: Boolean)` for the enable/disable transition (atomic write
+     via existing helper; on enable, read → seal → write; on disable,
+     read → write plain FIRST → only then vault.disable() — iOS
+     EncryptionSettingsView.disable() comment explains the ordering).
+  3. `ui/settings/EncryptionSettingsScreen.kt` + route `settings/encryption`
+     + a Settings-home row under a "Privacy" grouping [mirror
+     EncryptionSettingsView.swift: status row, off→passphrase+confirm+turn
+     on (≥8 chars, spinner while KDF runs — 220k iterations ≈ 1–2 s, run on
+     Dispatchers.Default), locked→passphrase+unlock, unlocked→Lock now /
+     Turn off (confirm dialog)].
+  4. Notes list locked state [NotesStore.swift:34-41]: when sealed+locked,
+     NotesListScreen shows a lock card ("Unlock in Settings" →
+     settings/encryption) instead of the list.
+  5. VM passthroughs: vault state flows + enable/unlock/lock/disable +
+     `fileIsSealed`.
+  6. Tests to keep green: 90; the crypto tests are the format contract.
+- **Verify Units 7–10 on Waydroid in one pass** (the current installed APK
+  predates all of them): build `./gradlew --offline -Psplits=true
+  assembleDebug`, install, then exercise: Speech page (voice row → picker
+  sheet; system voice sheet lists device voices; Supertonic selected →
+  quality dial, set Fast, play a note, confirm shorter render; export a WAV
+  while Fast — export must stay full quality, compare RTF in logs), Stats
+  page (Week/Month/Year switch, bars render, Subjects rows, heatmap aligns
+  Mon-first), Storage (Note images row + clear-orphans toast), Notes list.
+  Screenshots: read directly (the built-in describer hallucinates — see the
+  discipline note below). Then release build cold-start re-check
+  (`assembleRelease` split, expect ~370 ms).
+- **Then**: update this file, `git add -A && git commit && git push` (same
+  commit as the work), and ASK THE USER for the v0.0.1 prerelease go-ahead
+  (their instruction: "when they work and the app is also very fast ask me
+  and I can allow you to release a prerelease v0.0.1"). Do NOT tag/publish
+  without that approval.
+- **Cross-session facts**: repo `github.com/thesagezm/speechnotes-android`
+  (private, main). Python3+cryptography IS available on the host — the
+  interop-vector generator lives at `/tmp/gen_vector.py` (regenerate if
+  /tmp was wiped; the recipe is in JoplinCryptoTest's header comment).
+
 - **Environment**: Waydroid RUNNING at <waydroid-ip> (adb 5555 verified
   2026-10-24). App installed: debug x86_64 build with ALL of today's units
   (install at ~07:05 host time). If adb shows `unauthorized`: copy
@@ -138,6 +212,49 @@ iOS reference: `~/speechnotes-ios`
   foreground, with a timeout.
 
 ## Completed Units
+
+- **2026-10-24 — Units 7/8/9 + Unit 10 (crypto half): settings parity,
+  90 tests green.**
+  - **Unit 7 — Speech settings (S1–S3):** Voice row in Speech settings
+    opens the shared VoicePickerSheet (`SpeechSettingsScreen.kt`); new
+    system-voice picker (`SystemVoiceSheet`: Default (English) + installed
+    `TextToSpeech` voices sorted by language tag then name, wired through
+    `SystemTtsEngine.installedVoices()` + existing `SpeechPlayer
+    .setSystemVoice`; row disabled + info caption while a ready neural
+    engine is active — iOS SettingsView parity). VoicePickerSheet now routes
+    the SYSTEM engine to its own system-voice list (the state-report §4.10
+    bug: system engine showed 28 Kokoro voices). Supertonic quality dial:
+    `SupertonicEngine.RenderQuality` (high=8/balanced=6/automatic=policy/
+    fast=4), pref `supertonicRenderQuality` shared with iOS, read per chunk
+    (applies next chunk), `StreamingPlaybackCore.isExporting` forces full 8
+    for exports (iOS core.isExporting parity); 4-option radio card shown
+    while Supertonic is selected.
+  - **Unit 8 — Stats (T1–T5):** `StatsScreen.kt` rewritten to iOS
+    StatsTabView parity: goals card first (always), empty state on
+    `activeDays()==0`, three header cards (Today/Streak/range), Week/Month/
+    Year segmented picker, grouped reading-vs-listening bars (week 7
+    in-place, month 30 scrollable, year 12 monthly; zero values draw no
+    bar), legend, Mon-first week-aligned 18-week heatmap with the iOS
+    level thresholds, Subjects card (top 8 by time in range via the
+    pre-existing `StatsStore.subjectTotals()`, book covers from disk +
+    `GoalMath.fraction` progress capsules, notes by title).
+  - **Unit 9 — Storage (ST1):** usage rows split ("Notes" = root JSON
+    files, new "Note images" row); "Note images" section with
+    `clearOrphanNoteImages` (removes image folders of pruned notes only —
+    recycle-bin notes keep theirs) + result toast.
+  - **Unit 10 crypto half:** `logic/JoplinCrypto.kt` — Joplin e2ee format
+    ported verbatim from iOS JoplinCrypto.swift (JED01 envelope, KeyV1
+    220k PBKDF2-HMAC-SHA512, StringV1 3-iteration data key over UTF-16LE,
+    65 536-unit chunking, session-nonce salt); PBKDF2 via
+    SecretKeyFactory (C path), AES-256-GCM via Cipher (ct‖tag layout
+    matches CryptoKit). **Interop-proven**: JoplinCryptoTest (12 tests)
+    decrypts envelopes sealed by an independent Python implementation —
+    StringV1 (unicode+astral), KeyV1 (220k), and a format-legal two-chunk
+    envelope. 90/90 tests green.
+  - Evidence: `./gradlew --offline :app:compileDebugKotlin
+    testDebugUnitTest` → BUILD SUCCESSFUL, `total tests: 90 failures: 0`.
+    On-device evidence PENDING (next session — current installed APK
+    predates all four units).
 
 - **2026-10-24 — Unit 6: settings-parity audit vs iOS (this session).** Read
   the iOS v1.7.4 settings surface (SettingsTabView, SettingsView,

@@ -220,6 +220,27 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
         _toast.value = null
     }
 
+    /**
+     * Storage: removes note-image folders whose note is gone from the
+     * library entirely (the 30-day prune dropped them). Notes still in the
+     * recycle bin keep their images — recovery must restore them. Off-thread;
+     * reports folders removed and bytes freed.
+     */
+    fun clearOrphanNoteImages(onDone: (Int, Long) -> Unit) {
+        appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val liveIds = notes.notes.value.map { it.id }.toSet()
+            var removed = 0
+            var bytes = 0L
+            com.speechnotes.app.logic.AppFiles.notesImagesDir.listFiles()?.forEach { dir ->
+                if (dir.isDirectory && dir.name !in liveIds) {
+                    bytes += dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+                    if (dir.deleteRecursively()) removed++
+                }
+            }
+            withContext(kotlinx.coroutines.Dispatchers.Main) { onDone(removed, bytes) }
+        }
+    }
+
     // MARK: - Lifecycle
 
     // Declared BEFORE the init block that (indirectly) uses them: property

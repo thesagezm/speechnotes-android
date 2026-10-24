@@ -67,6 +67,7 @@ object Prefs {
     const val VOICE = "voice"
     const val SUPERTONIC_VOICE = "supertonicVoice"
     const val SUPERTONIC_LANG = "supertonicLang"
+    const val SUPERTONIC_QUALITY = "supertonicRenderQuality"
     const val SYSTEM_VOICE = "systemVoiceIdentifier"
     const val RATE_MULTIPLIER = "rateMultiplier"
     const val MINI_PLAYER_COLLAPSED = "miniPlayerCollapsed"

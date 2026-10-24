@@ -491,6 +491,15 @@ class StreamingPlaybackCore(
 
     // MARK: - WAV export
 
+    /**
+     * True while an export renders on the generate queue. Chunk synthesis
+     * reads this to bypass any quality shedding — an offline render has no
+     * deadline, so exports are always full quality (iOS isExporting parity).
+     */
+    @Volatile
+    var isExporting: Boolean = false
+        private set
+
     /** Renders [text] to a WAV file (off-thread); progress 0…1. */
     fun exportWav(text: String, output: File, onProgress: (Double) -> Unit, onDone: (File?) -> Unit) {
         val clean = text.trim()
@@ -510,22 +519,27 @@ class StreamingPlaybackCore(
             // inter-chunk silences land in the buffer, and the "successful"
             // WAV is a quarter second of silence.
             if (!isModelReady()) { main { onDone(null) }; return@execute }
-            val all = ArrayList<Float>()
-            var done = 0
-            for (chunk in utteranceChunks) {
-                val samples = runCatching { generateChunk(chunk.text) }.getOrNull()
-                if (samples != null) all.addAll(samples.toTypedArray())
-                for (i in 0 until silenceSamples) all.add(0f)
-                done++
-                main { onProgress(done.toDouble() / utteranceChunks.size) }
+            isExporting = true
+            try {
+                val all = ArrayList<Float>()
+                var done = 0
+                for (chunk in utteranceChunks) {
+                    val samples = runCatching { generateChunk(chunk.text) }.getOrNull()
+                    if (samples != null) all.addAll(samples.toTypedArray())
+                    for (i in 0 until silenceSamples) all.add(0f)
+                    done++
+                    main { onProgress(done.toDouble() / utteranceChunks.size) }
+                }
+                if (all.isEmpty()) { main { onDone(null) }; return@execute }
+                val bytes = WavWriter.encode(all.toFloatArray(), sampleRateHz)
+                runCatching {
+                    output.parentFile?.mkdirs()
+                    output.writeBytes(bytes)
+                }
+                main { onDone(output) }
+            } finally {
+                isExporting = false
             }
-            if (all.isEmpty()) { main { onDone(null) }; return@execute }
-            val bytes = WavWriter.encode(all.toFloatArray(), sampleRateHz)
-            runCatching {
-                output.parentFile?.mkdirs()
-                output.writeBytes(bytes)
-            }
-            main { onDone(output) }
         }
     }
 

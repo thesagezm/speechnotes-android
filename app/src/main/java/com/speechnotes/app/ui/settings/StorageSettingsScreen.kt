@@ -190,6 +190,37 @@ fun StorageSettingsScreen(vm: SpeechnotesViewModel, onBack: () -> Unit) {
             // Maintenance: clear partial downloads and share temp files
             // (never user content — ExportsStore.clearTemporaryFiles).
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
+
+            // Note images (iOS Storage imagesSection parity): inserted images
+            // live under their note's folder. Folders whose note is gone
+            // entirely (30-day prune) are orphans; recycle-bin notes keep
+            // theirs so recovery restores them.
+            Text(
+                "Note images",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp),
+            )
+            Text(
+                "Images inserted into notes are stored per note. Notes still in the recycle bin keep their images — this clears only folders with no remaining note.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+            TextButton(
+                onClick = {
+                    vm.clearOrphanNoteImages { removed, bytes ->
+                        vm.refreshStorageUsage()
+                        vm.showToast(
+                            if (removed == 0) "No orphaned note images"
+                            else "Removed images for $removed deleted note(s) · ${formatBytes(bytes)}",
+                        )
+                    }
+                },
+                modifier = Modifier.padding(start = 8.dp),
+            ) { Text("Clear images of deleted notes") }
+
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
             TextButton(
                 onClick = {
                     val freed = ExportsStore.clearTemporaryFiles()
