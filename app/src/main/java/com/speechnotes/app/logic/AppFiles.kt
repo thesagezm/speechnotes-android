@@ -41,6 +41,8 @@ object AppFiles {
 
     fun notesFile() = File(root, "notes.json")
     fun notesBackupFile() = File(root, "notes.backup.json")
+    /** The passphrase-wrapped master key (Joplin KeyV1), itself wrapped under the Keystore. */
+    fun vaultKeyFile() = File(root, "vault.key")
     fun notebooksFile() = File(root, "notebooks.json")
     fun notebooksBackupFile() = File(root, "notebooks.backup.json")
     fun bookmarksFile() = File(root, "bookmarks.json")

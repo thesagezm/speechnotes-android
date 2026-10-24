@@ -264,6 +264,9 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
             StatsStore.init(application)
             statsCenter.attach()
             goals.init()
+            // The vault state must be known before the notes load: a sealed
+            // notes.json with a locked vault loads as the locked state.
+            EncryptionVault.init()
             notes.load()
             notebooks.load()
             bookmarks.load()
@@ -659,6 +662,42 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
     private fun currentScopeNotebookId(): String? {
         val scope = activeNotebookScope
         return if (scope.startsWith("nb-")) scope.removePrefix("nb-") else null
+    }
+
+    // MARK: - Encryption vault (Unit 10, iOS EncryptionSettingsView parity)
+
+    val vault get() = EncryptionVault
+
+    /**
+     * Turns encryption on and re-seals the library in place. The KDF runs
+     * inside `EncryptionVault.create` (Dispatchers.Default); the reseal runs
+     * on the NotesStore writer thread. Returns the note count sealed.
+     */
+    suspend fun encryptionEnable(passphrase: String): Int {
+        EncryptionVault.create(passphrase)
+        return notes.resealWithCurrentVault(forcePlain = false)
+    }
+
+    /** Unlocks the vault, then re-reads the sealed file. null = the file would not open. */
+    suspend fun encryptionUnlock(passphrase: String): Int? {
+        EncryptionVault.unlock(passphrase)
+        return notes.reloadAfterUnlock()
+    }
+
+    fun encryptionLock() {
+        EncryptionVault.lock()
+        notes.markLocked()
+    }
+
+    /**
+     * Turns encryption off. Order matters (iOS EncryptionSettingsView.disable):
+     * the file is rewritten as plain JSON FIRST, while the key is still in
+     * memory — only then is the key deleted.
+     */
+    suspend fun encryptionDisable(): Int {
+        val count = notes.resealWithCurrentVault(forcePlain = true)
+        EncryptionVault.disable()
+        return count
     }
 
     // MARK: - Books
