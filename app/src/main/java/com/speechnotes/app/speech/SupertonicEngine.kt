@@ -6,6 +6,7 @@ import ai.onnxruntime.OrtSession
 import ai.onnxruntime.OrtSession.Result
 import com.speechnotes.app.data.LogStore
 import com.speechnotes.app.logic.AppFiles
+import com.speechnotes.app.logic.ChunkSchedule
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -139,7 +140,22 @@ class SupertonicEngine : SpeechEngine {
             config = StreamingPlaybackCore.Config(
                 sampleRate = 24_000,
                 chunkMaxChars = 200,
+                // Fallback opener only — the seconds-based schedule below owns
+                // the opener now. The fixed 60 chars lost the break-even race
+                // at ANY realistic RTF (break-even is 60/200 = 0.3 while this
+                // engine measures 0.42–0.49 nominal, 1.68 critical): the
+                // opener always ran dry before the second buffer rendered.
                 firstChunkMaxChars = FIRST_CHUNK_MAX_CHARS,
+                // iOS SupertonicEngine.swift:142 — the seconds-based chunk
+                // schedule, seeded from the iOS device log (second buffer
+                // 8.5–13.2 s after the first; ~10 chars per audio second).
+                // Grows the opener target when a session's second buffer
+                // arrives late; measures this engine's own speaking rate
+                // after its first session.
+                schedule = ChunkSchedule.State(
+                    targetSeconds = ChunkSchedule.supertonicTargetSeconds,
+                    fallbackCharactersPerAudioSecond = ChunkSchedule.supertonicCharactersPerAudioSecond,
+                ),
                 exportInterChunkSilence = 0.05f,
                 logPrefix = "SupertonicEngine",
             ),

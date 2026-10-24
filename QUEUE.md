@@ -21,19 +21,12 @@ remaining Waydroid verification items are listed under Pending Queue.
 
 1. **"start analysing ways to make the tts much much faster… iOS set maximum
    tokens from the previous generation seconds — completely increased the
-   speed of generation and prevented stopping of tts"** — ANALYSIS DONE
-   2026-10-24 (see Pending Queue items 0a–0c for the port plan). iOS commit
-   `afdc1d1` (2026-10-23) replaced the character ladder with the
-   **seconds-based ChunkSchedule** (`Packages/SpeechLogic/ChunkSchedule.swift`):
-   an audio-seconds opener target (Kokoro seed 8 s / 16 chars-per-audio-s,
-   Supertonic 10 s / 10, band 3–30 s) that is fed the MEASURED wait from the
-   first to the second buffer at every session end (`reportToSchedule`,
-   StreamingTTSPlaybackCore.swift:1327) and converts to a character budget at
-   the next speak, clamped to the engine's batch/token ceiling; opener grows
-   by whole sentences (`minOpenerChars`). Follow-up `241888e` added the
-   never-run-dry silence bridge (0.5 s keepalive buffers) that prevents TTS
-   stopping when the bank drains. Android has NONE of this: fixed opener
-   caps 100/60 chars, no session metrics, dead seconds-bank (P0-7).
+   speed of generation and prevented stopping of tts"** — ADDRESSED: the
+   analysis (2026-10-24) located the iOS seconds-based ChunkSchedule
+   (`afdc1d1` + `e680114` + silence bridge `241888e`) and **Unit 0a shipped
+   the schedule port** (see Completed Units). Remaining from the plan: 0b
+   (live seconds-based bank, fixes P0-7) and 0c (never-run-dry silence
+   bridge — the "prevented stopping" half).
 2. **"push and handover right now… the repo should be public… as well as the
    prerelease v0.1.0… just remove things that can lead to identification of
    this or my pc"** — DONE 2026-10-24: all four markdown docs (AGENTS.md
@@ -65,10 +58,17 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **Unit 0a (seconds-based ChunkSchedule) COMPLETE + verified on Waydroid** —
+  see Completed Units.
+- **Waydroid audio caveat this boot (2026-10-24 ~23:52)**: playback reached
+  SPEAKING but the head froze at 0 — AudioFlinger logged `write blocked for
+  574 msecs` then `BUFFER TIMEOUT: remove(58) from active list` 1 s in; the
+  HAL sink never drained this session (known container pathology, pre-dates
+  0a). Audible confirmation stays with the user on real hardware.
 - **2026-10-24 — TTS-speed analysis unit (doc-only)**: traced the iOS
   seconds-based ChunkSchedule (`afdc1d1`, `e680114`) + never-run-dry bridge
   (`241888e`) to their Android gaps; port plan recorded as Pending Queue
-  items 0a/0b/0c. No code changed; tests untouched (90 green still valid).
+  items 0a/0b/0c.
 - **Unit 10 (Encryption vault) COMPLETE + verified on Waydroid**: full cycle
   enable → "2 note(s) sealed at rest" → Lock now → notes list lock card →
   cold-start locked card → "Unlock in Settings" nav → wrong passphrase
@@ -83,36 +83,28 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Pending Queue
 
-0. **TTS generation speed (user feedback, jumps the queue):**
-   - **0a — Port the iOS seconds-based ChunkSchedule** (iOS `afdc1d1` +
-     `e680114`): `logic/ChunkSchedule.kt` (pure Kotlin, seeds 8 s/16 cps
-     Kokoro, 10 s/10 cps Supertonic, band 3–30 s, grow `max(2×t, 1.2×wait)`,
-     settle `max(wait+2, 0.75×t)`); `SentenceChunker.chunks(minOpenerChars:)`
-     whole-sentence opener completion (default OFF, port the tests); core
-     wiring — measure chunk-0 audio seconds + chars + second-buffer wait
-     (frames/sampleRate vs next-buffer arrival), `record(...)` at session
-     end, `speak()` sizes firstMaxChars=minOpenerChars=schedule budget
-     clamped to chunkMaxChars. Delete/retire the fixed `firstChunkMaxChars`
-     100 (Kokoro) / 60 (Supertonic) once the schedule is live. Port
-     ChunkScheduleTests.swift + the new SentenceChunkerTests cases.
+0. **TTS generation speed (user feedback):**
+   - **0a — seconds-based ChunkSchedule: SHIPPED + Waydroid-verified**
+     (Completed Units).
    - **0b — Live seconds-based render-ahead bank** (fixes P0-7): replace the
-     chunk-count semaphore (`bankTargetSeconds/4`, StreamingPlaybackCore.kt:168)
+     chunk-count semaphore (`bankTargetSeconds/4`, StreamingPlaybackCore.kt)
      with `RenderAheadBankPolicy.allows(bankedSeconds, target)` per chunk —
      banked = (framesWritten − head)/sampleRate, the iOS core's real pacing.
    - **0c — Never-run-dry silence bridge** (iOS `241888e`): when the last
      scheduled buffer completes and the next chunk is still rendering, write
      0.5 s silent keepalive buffers so the track is never disabled by
      AudioFlinger — speech resumes when synthesis lands instead of the
-     session dying. Partially covers the P1 never-started watchdog.
-   - Evidence base: Android dead-air math — Kokoro break-even RTF =
-     first(100)/batch(160) = 0.625, Supertonic 60/200 = 0.3 while its
-     measured nominal RTF is 0.42–0.49 (1.68 critical): both engines gap on
-     every session today; the only measured-seconds signal in the core is
-     `lastChunkRenderSeconds` (EWMA, prebuffer floor only).
-     Token-ceiling answer: the speed win is NOT a bigger ceiling — Kokoro
-     160 chars already sits at MAX_TOKENS 510 after G2P expansion (raising
-     it re-creates the "token count 681" abort); the win is adaptively
-     filling the opener to the ceiling + no stalls + fewer/larger renders.
+     session dying. On the 2026-10-24 Waydroid boot this is ALSO the
+     frozen-head-at-0 fix path (AudioFlinger `BUFFER TIMEOUT: remove` the
+     moment playback started — the HAL write blocked 574 ms and the track
+     was dropped; the completion poller spun at head 0/58200 until manual
+     stop; pre-existing pathology, two guards already fight it).
+   - Token-ceiling answer (recorded): the speed win is NOT a bigger ceiling —
+     Kokoro 160 chars already sits at MAX_TOKENS 510 after G2P expansion
+     (raising it re-creates the "token count 681" abort); the win is
+     adaptively filling the opener to the ceiling + no stalls + fewer/larger
+     renders. Unit 0a's schedule now pins the opener at exactly that ceiling
+     when the device is slow (verified on device: `next opener 160 chars`).
 1. **Finish the Units 7–10 Waydroid pass** (the installed APK is current):
    Supertonic Fast play → chunk render times (expect ~half of the 8-step
    numbers); export WAV while Fast → export must render full 8 steps
@@ -180,6 +172,35 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Completed Units
 
+- **2026-10-25 — Unit 0a: the seconds-based ChunkSchedule (iOS `afdc1d1` +
+  `e680114` port).**
+  - `logic/ChunkSchedule.kt` — pure-Kotlin port, verbatim: audio-seconds
+    opener target (Kokoro seed 8 s / 16 chars-per-audio-s, Supertonic 10 s /
+    10, band 3–30 s), grows `max(2×target, 1.2×wait)` when a session's second
+    buffer is LATE, holds on a tight cover, settles `max(wait+2, 0.75×target)`
+    on a comfortable one, learns chars-per-audio-second from the opener and
+    scales it with the live rate; `openerCharacterBudget` clamps to the
+    engine's batch/token ceiling.
+  - `SentenceChunker.chunks(minOpenerChars:)` — whole-sentence opener
+    completion (`completedOpenerEnd`), DEFAULT OFF; existing pinned tests
+    unchanged.
+  - `StreamingPlaybackCore` — Config gains `schedule: ChunkSchedule.State?`;
+    `speak()` sizes firstMaxChars=minOpenerChars from the budget (fallback =
+    the old fixed cap); per-session metrics (first/second SUCCESSFUL buffer
+    stamps, opener audio seconds + chars); `reportToSchedule()` fired from
+    finish() AND stop(); `exportWav` uses the same budget (iOS renderWAV
+    parity), exports never feed back. Engines seed per-engine states (Kokoro
+    8 s/16, Supertonic 10 s/10); the fixed 100/60 caps remain only as the
+    no-schedule fallback.
+  - Tests: +19 `ChunkScheduleTest` (full port of ChunkScheduleTests.swift) +
+    6 `SentenceChunkerOpenerTest` → **115/115 green** (90 prior).
+  - Waydroid evidence (Kokoro fp32): stop-path report `chunk schedule — no
+    second buffer, target 8.00s of opener audio, 14.02 chars/audio-s, next
+    opener 113 chars`; multi-chunk report `second buffer was LATE, target
+    16.00s of opener audio (last second buffer LATE), 21.18 chars/audio-s,
+    next opener 160 chars` — the opener pinned at the MAX_TOKENS ceiling on
+    a slow device, the exact mechanism the user reported from iOS. Both
+    sessions reached GENERATING→SPEAKING, chunks rendered without errors.
 - **2026-10-24 — Unit 10: Encryption vault (E1) + on-device verification.**
   - `logic/JoplinCrypto.kt` (previous session) + `data/EncryptionVault.kt`:
     create/unlock/lock/disable, Keystore double-wrap, suspend KDF paths on
