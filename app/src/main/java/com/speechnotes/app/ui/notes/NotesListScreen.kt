@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
@@ -93,10 +94,15 @@ fun NotesListScreen(
     onOpenNote: (String) -> Unit,
     onOpenRecycleBin: () -> Unit,
     onOpenNotebooks: () -> Unit,
+    onOpenEncryptionSettings: () -> Unit = {},
 ) {
     val notes by vm.notes.notes.collectAsState()
     val notebooks by vm.notebooks.notebooks.collectAsState()
     val toast by vm.toast.collectAsState()
+    // A sealed notes.json with a locked vault: the library is intact but
+    // unreadable — show the unlock prompt, not an empty list (iOS
+    // NotesStore.isLocked parity).
+    val notesLocked by vm.notes.isLocked.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
@@ -203,6 +209,7 @@ fun NotesListScreen(
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when {
+                notesLocked -> LockedNotesState(onUnlock = onOpenEncryptionSettings)
                 notes.isEmpty() -> EmptyNotesState(onCreate = { val n = vm.createNote(null); onOpenNote(n.id) })
                 visible.isEmpty() -> EmptySearchState(searchText)
                 else -> {
@@ -611,6 +618,42 @@ private fun EmptySearchState(query: String) {
             "No results for \"$query\"",
             style = MaterialTheme.typography.titleMedium,
         )
+    }
+}
+
+/**
+ * The library is sealed and the vault is locked (Unit 10): the notes are
+ * there, just unreadable — never render that as an empty list.
+ */
+@Composable
+private fun LockedNotesState(onUnlock: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Default.Lock,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(40.dp),
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Your notes are encrypted",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Unlock with your passphrase to read and edit them. They stay sealed on disk until then.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onUnlock) { Text("Unlock in Settings") }
     }
 }
 

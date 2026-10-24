@@ -142,6 +142,7 @@ private fun AppNavHost(
                         onOpenNote = { id -> navController.navigate("note/$id") },
                         onOpenRecycleBin = { navController.navigate("recycle") },
                         onOpenNotebooks = { navController.navigate("notebooks") },
+                        onOpenEncryptionSettings = { navController.navigate("settings/encryption") },
                     )
                 }
                 composable(Tab.BOOKS.route) {
@@ -180,6 +181,9 @@ private fun AppNavHost(
                 }
                 composable("settings/storage") {
                     com.speechnotes.app.ui.settings.StorageSettingsScreen(vm = vm, onBack = { navController.popBackStack() })
+                }
+                composable("settings/encryption") {
+                    com.speechnotes.app.ui.settings.EncryptionSettingsScreen(vm = vm, onBack = { navController.popBackStack() })
                 }
                 composable("settings/about") {
                     com.speechnotes.app.ui.settings.AboutScreen(onBack = { navController.popBackStack() })

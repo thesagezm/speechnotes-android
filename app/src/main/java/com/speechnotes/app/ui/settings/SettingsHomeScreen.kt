@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notes
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.RecordVoiceOver
@@ -88,6 +89,11 @@ fun SettingsHomeScreen(
                 title = "Storage",
                 subtitle = "Usage breakdown, exported audio",
             ) { onOpen("settings/storage") }
+            SettingsLinkRow(
+                icon = Icons.Default.Lock,
+                title = "Encryption",
+                subtitle = "Passphrase-sealed notes, Joplin-compatible",
+            ) { onOpen("settings/encryption") }
             SettingsLinkRow(
                 icon = Icons.Default.Terminal,
                 title = "Diagnostics",
