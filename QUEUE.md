@@ -6,70 +6,97 @@ describes once the repo is on GitHub).
 
 ## Current Phase
 
-**The Great Rewrite.** TTS fixed (Unit 1, 2026-10-23). Performance pass +
-Settings subpages + Kokoro-small source switch shipped 2026-10-24 (Units 2–4).
-**The GitHub push is armed but NOT done** — see Session Handover: the session
-was cut short by host instability; `git init` + `gh repo create` + push is the
-FIRST action of the next session.
+**The Great Rewrite.** TTS fixed (Unit 1). Perf pass (Unit 2, release cold
+start 370 ms). Settings subpages (Unit 3). Kokoro-small quantized (Unit 4).
+**GitHub push DONE 2026-10-24 (Unit 5):**
+https://github.com/thesagezm/speechnotes-android (private, branch `main`).
+Now: **settings parity with iOS** per the user's 2026-10-24 instruction —
+"make sure all the settings (including stats) are on par to Speechnotes iOS
+or better; when they work and the app is also very fast, ask me and I can
+allow you to release a prerelease v0.0.1". Units 7–10 below close the gaps,
+then Waydroid verification, then ASK before the v0.0.1 tag.
 
 ## User Feedback Pending
 
-1. **"The android app is the slowest"** — ADDRESSED 2026-10-24 (Unit 2):
+1. **"make sure all the settings (including stats) are on par to speechnotes
+   ios or better … then ask me … prerelease v0.0.1"** — IN PROGRESS (Units
+   6–10). Audit done (Unit 6 below); gaps S1–S3, T1–T5, ST1, E1 queued.
+2. **"The android app is the slowest"** — ADDRESSED 2026-10-24 (Unit 2):
    cold start on Waydroid debug 1715 ms → ~1380 ms; **R8 release 370 ms**.
    User's hands-on verdict pending.
-2. **"The tts is also not working"** — RESOLVED 2026-10-23 (Unit 1). User's
+3. **"The tts is also not working"** — RESOLVED 2026-10-23 (Unit 1). User's
    own play at 03:30 (Waydroid clock) on 2026-10-24 completed naturally.
-3. **"The buttons dont feel right"** — root cause fixed in Unit 1; the new
+4. **"The buttons dont feel right"** — root cause fixed in Unit 1; the new
    Settings subpages + instant radio/toggle flips verified 2026-10-24.
-4. **"switch the small kokoro model just as i did in speechnotes-ios … the
+5. **"switch the small kokoro model just as i did in speechnotes-ios … the
    source for kokoro small is a smaller engine no longer the 177mb file"**
-   — DONE 2026-10-24 (Unit 4, details below). **The ~92 MB quantized download
-   has NOT run yet** (container offline): next launch with network, Settings →
-   Speech engine → Kokoro (small) → Download. Until then the small tier shows
-   "Model not downloaded yet" and playback falls back to system voice.
-5. **GitHub push gate** — speed gate MET (370 ms release cold start), TTS gate
-   met on 2026-10-23/24 evidence. Push is the next session's first action.
+   — DONE 2026-10-24 (Unit 4). The ~92 MB download has NOT run yet
+   (container offline): next launch with network, Settings → Speech →
+   Kokoro (small) → Download.
 
 ## GitHub Gate status
 
-**BOTH GATES MET — PUSH PENDING.** Not yet a git repository (host instability
-hit right before `git init`). Next session:
-
-```bash
-cd ~/speechnotes-android
-git init && git add -A && git commit -m "Speechnotes Android: perf pass, settings subpages, kokoro-small quantized switch"
-gh repo create speechnotes-android --private --source . --push
-```
-
-- Check `gh auth status` first; if unauthenticated, ask the user to `gh auth login`.
-- `.gitignore`: NONE EXISTS YET — create one BEFORE `git add -A`:
-  ignore `.gradle/`, `build/`, `app/build/`, `local.properties`, `*.iml`,
-  `.idea/`. The `app/build` dir is ~1 GB of APKs — must not enter git.
-- Never commit credentials (none exist; models download at runtime).
+**CLOSED.** Repo live: `github.com/thesagezm/speechnotes-android` (private,
+main, commit 6713619 = Units 1–4). Git identity set locally
+(`thesagezm@users.noreply.github.com`). `.gitignore` existed; added `.kotlin/`.
+Discipline from here: every unit lands with QUEUE.md updated in the same
+commit and `git push` after verify.
 
 ## In Flight / Last Push
 
-- Nothing in flight. Units 2, 3, 4 complete and verified; Unit 5 (push) armed.
+- Unit 7 (Speech settings parity) starting.
 
 ## Pending Queue
 
-1. **GitHub push** (see exact commands above). Do it FIRST.
-2. **P1 — neural playback start-stall (Waydroid, intermittent).** Full
-   evidence in Completed Units (Unit 5 note). Symptom: after the output
-   thread enters standby (3 s idle), a new AudioTrack's play() registers
-   (track state "A") but audioflinger's mixer never consumes —
-   `dumpsys media.audio_flinger` shows `Standby: yes`, track `Server=0`,
-   `FrmRdy=216000` (all 9 s of audio parked in the 1 MB buffer), underruns 0.
-   UI sticks on Pause forever; pause/stop still responsive. Reproduced 2/2 on
-   fp32 at 04:35/04:42/04:50; the user's own play at 03:30 (uint8) finished
-   naturally — a race, not a regression (playback code untouched by Units
-   2–4). A live pause→resume re-arm did NOT kick the mixer (Server stayed 0).
-   **Next unit: never-started watchdog in StreamingPlaybackCore's completion
-   poller — if head==0 with frames ready for 10 s, rebuild the session
-   (stop → re-speak from bookmark) once, with a Logs-screen error if it
-   fails again.** Also verify on real hardware (user's arm64 phone).
-3. P0-1 (editor preview lock-in), P0-3 (.jex image round-trip), then the
+1. **Unit 7 — Speech settings parity (S1–S3, from Unit 6 audit).**
+2. **Unit 8 — Stats parity (T1–T5).** 3. **Unit 9 — Storage note-images
+   cleanup (ST1).** 4. **Unit 10 — Encryption vault (E1, P0-4).**
+5. **Waydroid verification of Units 7–10 + release cold-start re-check,
+   then ASK the user for the v0.0.1 prerelease go-ahead.**
+6. **P1 — neural playback start-stall watchdog (never-started variant)**
+   (evidence in Completed Units, Unit 5-note).
+7. P0-1 (editor preview lock-in), P0-3 (.jex image round-trip), then the
    state-report P0/P1 list in order.
+
+### Unit 6 audit — settings gaps vs iOS (2026-10-24)
+
+iOS reference: `~/speechnotes-ios`
+(v1.7.4 working tree). Android parity verdicts:
+
+- **Parity or better already:** Appearance (accent/mode/reader-theme/text-
+  scale/spacing/reset — reader theme is Android-extra), Notes settings
+  (markdown/read-along/haptics/image-cache), Goals (same editability),
+  Backup (.jex both ways), BookDrop receiver surface, Storage core
+  (usage/exports/temp), About/Logs, Kokoro quality (Android's 4-engine
+  contract with KOKORO vs KOKORO_SMALL rows covers iOS's High/Compact dial
+  — documented divergence).
+- **S1 — voice picker row missing from Speech settings** (only reachable
+  from the note editor; iOS has it in settings).
+- **S2 — system voice picker missing entirely.** `SpeechPlayer.setSystemVoice`
+  (`SpeechPlayer.kt:416`) and `SystemTtsEngine.voiceIdentifier`
+  (`SystemTtsEngine.kt:26`, applied `:169,:223`) exist with no UI; iOS lists
+  all AVSpeechSynthesisVoices sorted by language+name with Default first.
+- **S3 — Supertonic quality dial missing** (iOS: High=8 steps always /
+  Balanced=6 / Automatic=8-sheds-at-critical / Fast=4; persisted
+  `supertonicRenderQuality`; applies next chunk; **export always full 8**).
+  Android `SupertonicEngine.totalStep` (`:59`) is fixed
+  `RenderAheadBankPolicy.totalStep(thermal)`.
+- **T1–T5 — Stats gaps** (user named stats explicitly): no Week/Month/Year
+  range picker; no activity bar chart (reading vs listening — iOS: week
+  daily bars, month scrollable daily, year monthly, legend); no Subjects
+  card (top 8 by time in range, book covers + progress bars — note:
+  `StatsStore.subjectTotals()` ALREADY EXISTS `StatsStore.kt:100`); heatmap
+  not Mon-first week-aligned (Android = sequential 126 days); no empty
+  state (`activeDays()` exists `:133`).
+- **ST1 — Storage lacks the note-images section** (iOS imagesSection +
+  per-note cleanup; Android stores under `filesDir/note-images`).
+- **E1 — Encryption missing entirely (state-report P0-4).** iOS ships a
+  Joplin-compatible vault (PBKDF2-HMAC-SHA512 220k wraps 256-byte master
+  key; AES-256-GCM; off/locked/unlocked; passphrase never stored). Port as
+  Unit 10 with format-exact tests vs the iOS implementation.
+- **Deferred (recorded, not settings):** LocalSend sender (P1-3), Web-import
+  paywall bypass (Safari/Readability-specific — record as divergence),
+  books long-press menu, swipe actions.
 
 ## Session Handover
 
@@ -111,6 +138,20 @@ gh repo create speechnotes-android --private --source . --push
   foreground, with a timeout.
 
 ## Completed Units
+
+- **2026-10-24 — Unit 6: settings-parity audit vs iOS (this session).** Read
+  the iOS v1.7.4 settings surface (SettingsTabView, SettingsView,
+  SpeechSettingsView, AppearanceSettingsView, StatsTabView,
+  StorageSettingsView sections, EncryptionSettingsView, AboutView) against
+  every Android subpage. Result: the gap list S1–S3 (speech), T1–T5 (stats),
+  ST1 (storage images), E1 (encryption) above; everything else at parity or
+  better. Evidence in the audit block under Pending Queue.
+
+- **2026-10-24 — Unit 5: GitHub push.** `.gitignore` (+`.kotlin/`), `git init
+  -b main`, 134 files / 26,969 insertions, commit 6713619, `gh repo create
+  speechnotes-android --private --source . --push` as `thesagezm` →
+  https://github.com/thesagezm/speechnotes-android. app/build correctly
+  excluded. Gate closed.
 
 - **2026-10-24 — Unit 5 note (P1 evidence, not a code unit): neural playback
   start-stall.** Play on fp32 after the output thread's standby window:
