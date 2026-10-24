@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; }
+  #viewer { width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div id="viewer"></div>
+<script src="jszip.min.js"></script>
+<script src="epub.min.js"></script>
+<script>
+  // Android bridge shim: reader.js was written for the iOS WKWebView
+  // postMessage channel; give it the same shape backed by the JS interface.
+  window.webkit = {
+    messageHandlers: {
+      reader: {
+        postMessage: function (msg) {
+          if (window.AndroidReaderBridge) window.AndroidReaderBridge.post(JSON.stringify(msg));
+        }
+      }
+    }
+  };
+
+  // Android WebView quirk: the html/body height:100% chain can compute to 0
+  // when the page loads before the WebView is first measured — epub.js then
+  // builds its rendition with height 0 (width measures fine), and the reader
+  // is a blank white void with no error posted. Size the container explicitly
+  // from the viewport instead, and keep it in sync; the synthetic resize
+  // event makes epub.js re-measure the rendition after it exists.
+  function sizeViewer() {
+    var v = document.getElementById("viewer");
+    if (!v) return;
+    v.style.height = window.innerHeight + "px";
+    v.style.width = window.innerWidth + "px";
+    document.documentElement.style.height = window.innerHeight + "px";
+    document.body.style.height = window.innerHeight + "px";
+  }
+  window.addEventListener("resize", function () {
+    sizeViewer();
+    try { window.dispatchEvent(new Event("resize")); } catch (e) { /* already resizing */ }
+  });
+  sizeViewer();
+</script>
+<script src="reader.js"></script>
+</body>
+</html>
