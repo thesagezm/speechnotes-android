@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +78,14 @@ fun VoicePickerSheet(vm: SpeechnotesViewModel, onDismiss: () -> Unit) {
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
+        // The system engine cannot use the Kokoro/Supertonic catalogs —
+        // descriptors() falls through to Kokoro, which listed 28 voices the
+        // engine can't speak with. System voices get their own list
+        // (iOS routes the system engine to a dedicated menu too).
+        if (engine == EngineKind.SYSTEM) {
+            SystemVoiceList(vm, onDismiss)
+            return@ModalBottomSheet
+        }
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text(
                 text = when (engine) {
@@ -210,6 +219,77 @@ fun VoicePickerSheet(vm: SpeechnotesViewModel, onDismiss: () -> Unit) {
             TextButton(onClick = onDismiss, modifier = Modifier.padding(bottom = 16.dp)) {
                 Text("Done")
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SystemVoiceList(vm: SpeechnotesViewModel, onDismiss: () -> Unit) {
+    val selected by vm.player.systemVoice.collectAsState()
+    var voices by remember { mutableStateOf(vm.player.systemVoiceList()) }
+    var query by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        var tries = 0
+        while (voices.isEmpty() && tries < 20) {
+            kotlinx.coroutines.delay(300)
+            voices = vm.player.systemVoiceList()
+            tries++
+        }
+    }
+    Column(Modifier.padding(horizontal = 16.dp)) {
+        Text("System voice", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Search voices") },
+            singleLine = true,
+        )
+        Spacer(Modifier.height(8.dp))
+        LazyColumn(Modifier.weight(1f, fill = false)) {
+            item(key = "default") {
+                ListItem(
+                    headlineContent = { Text("Default (English)") },
+                    leadingContent = {
+                        if (selected == null) {
+                            Icon(Icons.Default.Check, contentDescription = "Selected")
+                        }
+                    },
+                    modifier = Modifier.clickable {
+                        vm.player.setSystemVoice(null)
+                        onDismiss()
+                    },
+                    colors = androidx.compose.material3.ListItemDefaults.colors(
+                        containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                    ),
+                )
+            }
+            val shown = voices.filter {
+                query.isBlank() || it.name.contains(query, ignoreCase = true) ||
+                    it.locale.toLanguageTag().contains(query, ignoreCase = true)
+            }
+            items(shown, key = { it.name }) { voice ->
+                ListItem(
+                    headlineContent = { Text("${voice.name} (${voice.locale.toLanguageTag()})", maxLines = 1) },
+                    leadingContent = {
+                        if (selected == voice.name) {
+                            Icon(Icons.Default.Check, contentDescription = "Selected")
+                        }
+                    },
+                    modifier = Modifier.clickable {
+                        vm.player.setSystemVoice(voice.name)
+                        onDismiss()
+                    },
+                    colors = androidx.compose.material3.ListItemDefaults.colors(
+                        containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                    ),
+                )
+            }
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.padding(bottom = 16.dp)) {
+            Text("Done")
         }
     }
 }

@@ -53,6 +53,10 @@ class SpeechPlayer(
     private val _supertonicLang = MutableStateFlow("en")
     val supertonicLang: StateFlow<String> = _supertonicLang.asStateFlow()
 
+    /** The Supertonic quality dial — the raw pref value (high/balanced/automatic/fast). */
+    private val _supertonicQuality = MutableStateFlow("high")
+    val supertonicQuality: StateFlow<String> = _supertonicQuality.asStateFlow()
+
     private val _systemVoice = MutableStateFlow<String?>(null)
     val systemVoice: StateFlow<String?> = _systemVoice.asStateFlow()
 
@@ -140,6 +144,7 @@ class SpeechPlayer(
         _voice.value = prefs.getString(Prefs.VOICE, "am_eric") ?: "am_eric"
         _supertonicVoice.value = prefs.getString(Prefs.SUPERTONIC_VOICE, "M1") ?: "M1"
         _supertonicLang.value = prefs.getString(Prefs.SUPERTONIC_LANG, "en") ?: "en"
+        _supertonicQuality.value = prefs.getString(Prefs.SUPERTONIC_QUALITY, "high") ?: "high"
         _systemVoice.value = prefs.getString(Prefs.SYSTEM_VOICE, null)
         rebuildEngine()
     }
@@ -225,6 +230,7 @@ class SpeechPlayer(
         }.also {
             it.voice = _supertonicVoice.value
             it.lang = _supertonicLang.value
+            it.renderQuality = SupertonicEngine.RenderQuality.fromRaw(_supertonicQuality.value)
         }
 
     private fun kokoroEngineFor(kind: EngineKind): KokoroEngine =
@@ -411,6 +417,29 @@ class SpeechPlayer(
         _supertonicLang.value = code
         Prefs.prefs(context).edit().putString(Prefs.SUPERTONIC_LANG, code).apply()
         supertonicEngine?.lang = code
+    }
+
+    /**
+     * Supertonic quality dial (iOS SpeechSettingsView.swift:205-219 parity).
+     * Applies from the NEXT chunk — the engine reads the step count per
+     * synth — and exports always render full quality regardless of this.
+     */
+    fun setSupertonicQuality(raw: String) {
+        _supertonicQuality.value = raw
+        Prefs.prefs(context).edit().putString(Prefs.SUPERTONIC_QUALITY, raw).apply()
+        supertonicEngine?.renderQuality = SupertonicEngine.RenderQuality.fromRaw(raw)
+    }
+
+    /**
+     * Installed system voices for the settings picker. May be empty until
+     * the system engine finished connecting (a moment after first use) —
+     * the sheet polls briefly. Constructs the (idle) system engine when a
+     * neural engine is active, matching iOS which enumerates independently
+     * of the playback path.
+     */
+    fun systemVoiceList(): List<android.speech.tts.Voice> {
+        if (systemEngine == null) system()
+        return systemEngine?.installedVoices().orEmpty()
     }
 
     fun setSystemVoice(identifier: String?) {

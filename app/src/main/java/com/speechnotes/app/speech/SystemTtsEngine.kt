@@ -239,5 +239,18 @@ class SystemTtsEngine(context: Context) : SpeechEngine {
     /** True when the device has a usable TTS engine installed. */
     val isAvailable: Boolean get() = ready
 
+    /**
+     * Installed system voices for the settings picker, sorted by language
+     * tag then name (iOS SettingsView.onAppear parity). Empty until the
+     * engine finished connecting; a device with no voices yields [].
+     */
+    fun installedVoices(): List<android.speech.tts.Voice> =
+        if (!ready) emptyList()
+        else runCatching {
+            tts.voices.sortedWith(
+                compareBy({ it.locale.toLanguageTag() }, { it.name })
+            )
+        }.getOrDefault(emptyList())
+
     fun shutdown() = tts.shutdown()
 }

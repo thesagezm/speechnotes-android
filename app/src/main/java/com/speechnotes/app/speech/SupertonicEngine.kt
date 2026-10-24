@@ -50,14 +50,51 @@ class SupertonicEngine : SpeechEngine {
     var lang: String = "en"
 
     /**
-     * Flow-matching denoising steps. The policy sheds to 4 ONLY at critical
+     * The quality dial (iOS SupertonicEngine.swift:61-95 parity): how the
+     * user trades render quality against speed, stored under
+     * `supertonicRenderQuality` and applied from the NEXT chunk (the step
+     * count is read per synth, no restart). Default HIGH.
+     */
+    enum class RenderQuality(val raw: String, val label: String) {
+        HIGH("high", "High — always full"),
+        BALANCED("balanced", "Balanced — middle step"),
+        AUTOMATIC("automatic", "Automatic — sheds when very hot"),
+        FAST("fast", "Fast — lowest quality");
+
+        companion object {
+            fun fromRaw(raw: String?): RenderQuality = entries.firstOrNull { it.raw == raw } ?: HIGH
+        }
+    }
+
+    /** The user's dial; SpeechPlayer keeps this in sync with the pref. */
+    @Volatile
+    var renderQuality: RenderQuality = RenderQuality.HIGH
+
+    /**
+     * Flow-matching denoising steps for the chunk being rendered. HIGH is
+     * the full 8 — the best sound, roughly twice the generation work
+     * (still faster than playback). BALANCED is 6 of the 8 steps: the
+     * ladder is not linear in time (first steps = coarse trajectory, last
+     * = detail), so 6 lands measurably closer to 8 at ~3/4 of its time.
+     * AUTOMATIC is the policy's thermal gear — sheds to 4 ONLY at critical
      * thermal (RTF 1.68 measured there vs 0.42–0.49 nominal — iOS
-     * RenderAheadBankPolicy:120-131). The 2026-10-06 device verdict: shedding
-     * at `serious` rendered ~90% of a book at 4 steps — audible artifacts.
-     * Quality outranks speed, so 8 steps everywhere except critical.
+     * RenderAheadBankPolicy:120-131; the 2026-10-06 device verdict was that
+     * shedding at `serious` rendered ~90% of a book at 4 steps with audible
+     * artifacts, so quality outranks speed everywhere below critical).
+     * FAST always uses 4: quickest, with audible artifacts.
      */
     private val totalStep: Int
-        get() = RenderAheadBankPolicy.totalStep(thermalState())
+        get() = when {
+            // An offline export has no deadline — always full quality
+            // (iOS `core.isExporting` bypass parity).
+            core.isExporting -> RenderAheadBankPolicy.FULL_QUALITY_TOTAL_STEP
+            else -> when (renderQuality) {
+                RenderQuality.HIGH -> RenderAheadBankPolicy.FULL_QUALITY_TOTAL_STEP
+                RenderQuality.BALANCED -> 6
+                RenderQuality.AUTOMATIC -> RenderAheadBankPolicy.totalStep(thermalState())
+                RenderQuality.FAST -> 4
+            }
+        }
 
     /**
      * Android thermal status at read time. Read per CHUNK (the getter runs
