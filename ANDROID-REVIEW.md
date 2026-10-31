@@ -79,11 +79,114 @@ coordinate here. After finishing with the file, log `release <file>`.
 
 ## Harry — log
 
+- [H4] claim ui/books/BookReaderScreen.kt for H4 (landscape playback rail)
+- [H4] claim ui/editor/NoteEditorScreen.kt for H4 (landscape playback rail)
+
+- [H1] claim ui/editor/NoteEditorScreen.kt for H1 (editor Edit/Preview toggle)
+- **H1 DONE — editor preview lock-in fixed.** Added a visible Edit/Preview
+  IconButton to the editor top bar (between word count and Play), iOS
+  NoteEditorView toolbar model: eye ("Preview markdown") while editing,
+  pencil ("Edit note") while previewing, `Haptics.tap` on the tap path.
+  `showPreview` was declared and never reassignable — with Render Markdown on
+  the app opened straight into preview with no way back. Files:
+  ui/editor/NoteEditorScreen.kt (toggle + `Visibility` import). Tests 115→115
+  green; x86_64 APK built (`-Psplits=true assembleDebug` — note:
+  `assembleDebugX86_64` task name does not exist, the splits flag produces
+  per-ABI APKs from `assembleDebug`). Waydroid: fresh install (old package
+  had a mismatched signature → uninstall + reinstall; test notes wiped,
+  recreated), note opened in preview, "Edit note" → editor + formatting bar,
+  "Preview markdown" → preview again; no logcat errors. release
+  ui/editor/NoteEditorScreen.kt.
+- **H2 DONE — Stats is the 4th tab.** New ui/stats/StatsTabScreen.kt (moved
+  out of ui/settings/StatsScreen.kt, deleted): own Scaffold + TopAppBar, no
+  back arrow; improved hierarchy per the user's ask — Today hero
+  (displaySmall hours headline + streak chip with 🔥 icon), a Best day
+  header card beside the range total, range picker inside the Activity card
+  with haptic on segment change, redesigned empty state (tinted circle +
+  "Nothing to chart yet"). Goals card stays on top (iOS GoalsCard parity).
+  Tab bar is now Notes / Books / Stats / Settings (SpeechnotesApp.kt, icon
+  Insights); "Stats & goals" row + route removed from Settings
+  (SettingsHomeScreen.kt — touched for the row removal only, no active
+  claims from Hermione at the time). No bottom bar on subpages unchanged.
+  Tests 115→115 green, APK built. Waydroid: 4 tabs render; Stats tab shows
+  goals card + empty state; Settings home no longer lists Stats & goals.
+- **H3 DONE — the minimized player is a draggable, edge-snapping bubble.**
+  ui/MiniPlayerOverlay.kt: dock restructured (expanded bars in a
+  bottom-aligned Column; collapsed bubbles absolutely positioned in a new
+  `EdgeSnappingBubble` — the iOS GlobalMiniPlayerOverlay v1.7.2 model).
+  Bubble CENTER is normalized (0…1, 0…1), persisted under the exact iOS key
+  names "miniBubbleX"/"miniBubbleY" (cross-platform prefs contract); drag
+  moves it freely (per-event deltas accumulated onto an Animatable),
+  release snaps to the nearest of the four edges with a critically damped
+  220 ms glide (no spring — iOS learned that the hard way), tap restores
+  the bar with a haptic; bubble parks above a 64dp bottom reserve so it
+  never covers a surface's own controls; rotation re-places it from the
+  stored normalized spot. Only one dock owner composes at a time, so the
+  three bubble types share the wrapper. Tests 115→115, APK built.
+  Waydroid: audiobook dock exercised via a real mp3 import (VIEW intent —
+  system TTS cannot init on this fresh container, so the note bar was
+  verified by its GENERATING session); Minimize → bubble at bottom-right;
+  drag to left → snapped at the left edge; tap → bar restored; force-stop +
+  relaunch + new session → bubble came back at the LEFT edge (persisted).
 - (session start 2026-10-31, awaiting first unit entry)
 
 ## Hermione — log
 
 - (session start 2026-10-31, awaiting first unit entry)
+- [M1] Code complete, build BLOCKED by a file I don't own: NoteEditorScreen.kt
+  is mid-edit (missing brace around RemoteNoteImage ~L1475-1531, unresolved
+  RemoteNoteImage) — Harry's H-unit file. My M1 changes are in logic/
+  NoteImageStore.kt (FNV→SHA-256 hash + sanitiseExtension allowlist),
+  logic/JexExport.kt (v1.8.1 Joplin-canonical layout: ustar "00" version, no
+  trailing newline, title-as-first-line, user_* timestamps, resource meta
+  title line + file_extension), logic/JexImport.kt (Joplin unserialize
+  semantics + legacy `title:` prop detection + speechnotes:// link matching +
+  resources/ traversal guard), data/ModelManager.kt (jexImages mime tiff/bmp +
+  ext hardening), logic/ZipReader.kt (member-path traversal filter), tests
+  rewritten/added in JexImportTest.kt + NoteImageStoreTest.kt. Will run the
+  suite as soon as the tree compiles again.
+- [M1] SESSION WRAP (2026-10-31, token budget end). M1 code was COMMITTED
+  directly (user instruction overrode the git-read-only rule for this one
+  commit) — only my files; NoteEditorScreen.kt was NOT committed (still
+  mid-edit). COULD NOT verify: the suite never ran because the shared tree
+  does not compile (Harry's NoteEditorScreen.kt, RemoteNoteImage region).
+  FIRST ACTION ON RESUME: `flock /tmp/sn-gradle.lock -c './gradlew --offline
+  testDebugUnitTest'` — expect ~125 tests (JexImportTest went 6→13, +3
+  NoteImageStoreTest on the 115 baseline; verify the count); fix reds if
+  the new JEX semantics broke an old expectation (old-layout fixtures now
+  need a `title:` prop or a title line), then build + install the x86_64
+  APK and verify the round-trip on
+  Waydroid: export .jex from a note WITH an image, delete the note, import
+  the .jex, confirm the image resolves (import toast counts images).
+  RESUME STATE for M2 (references fully read, no code written yet):
+  dbc0677 port = (a) receiver byte-progress: LocalSendHTTPServer.kt
+  accumulateBody must report (path, query, received, expected) via a new
+  bodyProgress callback throttled ~1%/256 KB + received=-1 connection-died
+  marker (iOS BodyProgressReporter); LocalSendReceiver.kt gains
+  incomingTransfer StateFlow cleared on upload response / cancel / stop /
+  fresh prepare — BookDropCore needs a fileNameFor(fileId) lookup; (b) NEW
+  data/LocalSendSender.kt porting iOS v1.8.1 LocalSendSender.swift on OkHttp:
+  /24 scan (48 concurrent, ports 53317-53327, skip-silent-host on connect
+  timeout), prepare-upload (20 s timeout, 401→needsAccessCode, 403, 409),
+  per-file POST /upload with sessionId/fileId/token/pin on the query,
+  ProgressRequestBody counting bytes (128 KB throttle), 120 s readTimeout =
+  inactivity stall message, sequential files, fingerprint/alias shared with
+  the receiver, subnet ranking simplified for Android (WifiManager/
+  NetworkInterface — drop the iOS ifaddrs interface-name heuristics);
+  (c) send sheet per BookDropSendView.swift: payload picker (books/notes/
+  exports/.jex), peer picker, access-code retry (prefs key bookDropSendPin,
+  SEPARATE from receiver's bookDropPin), staging copies deleted on end;
+  entry points = notes long-press + books long-press "Send with BookDrop"
+  (claim NotesListScreen.kt / BooksScreen.kt first) + a row on
+  BookDropSettingsScreen; (d) P0-6: BookDropCore.acceptedExtensions unions
+  DocumentBook.supportedExtensions — CHECK what that set holds and restrict
+  to parseable formats (docx/odt/pptx/odp/epub/pdf/audio/jex only — drop
+  mobi/azw3/fb2/rtf/html/txt/md if they have no parser) or mark unsupported
+  at accept time. M3/M4/M5 untouched — full briefs in the mission (M4:
+  port iOS Packages/SpeechLogic MathNotation.swift + MathCommands.swift,
+  commits 1fa3482/1eab53c/626e505, wire into SpeechText.kt/MarkdownText.kt
+  + MarkdownStyledText.kt preview; M5 security list is itemized there).
+  Claims: none held — no shared file is claimed or being edited.
 
 ## Ron — log
 

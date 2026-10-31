@@ -2,17 +2,22 @@ package com.speechnotes.app.logic
 
 /**
  * Joplin-compatible JEX IMPORT — the mirror of [JexExport]. A `.jex` file is
- * a plain (uncompressed) tar of `<id>.md` entries whose trailing metadata
- * block carries the id/type/parent/timestamps, plus
+ * a plain (uncompressed) tar of `<id>.md` entries laid out the way Joplin's
+ * `BaseItem.serialize` writes them — `title\n\nbody\n\nprops`, with `type_`
+ * as the last prop and no trailing newline — plus
  * `resources/<resource-id>.<ext>` binaries. Kotlin port of SpeechLogic's
- * JexImport.swift; independent reimplementation from the public format docs.
+ * JexImport.swift (v1.8.1); independent reimplementation from the public
+ * format docs.
  *
  * What this parser accepts (deliberately lenient — JEX files in the wild
  * come from Joplin itself, from this app's export, and from other tools):
  *  - ustar AND GNU "old" tar headers, plus pax extended headers (skipped).
- *  - metadata blocks with `type_` ANYWHERE in the trailing block (Joplin
- *    writes it first; this app's exporter writes it last) and `key: value`
- *    lines; unknown keys are ignored.
+ *  - the canonical `title\n\nbody\n\nprops` layout AND this app's older
+ *    exports (body verbatim, title as a `title:` prop, trailing newline)
+ *    — a present `title:` prop marks the old layout.
+ *  - metadata blocks read with Joplin's `unserialize` semantics: props
+ *    scanned from the END up to the first blank line; unknown keys are
+ *    ignored.
  *  - type_ 1 (note), 2 (folder), 4 (resource metadata). Everything else is
  *    skipped.
  */
@@ -77,19 +82,26 @@ object JexImport {
             val name = entry.name
             if (name.startsWith("resources/")) {
                 val rest = name.removePrefix("resources/")
-                val id = rest.substringBeforeLast('.')
-                val ext = rest.substringAfterLast('.', "")
-                if (id.isNotEmpty()) {
-                    resourceBytes[id] = payload
-                    val existing = resourceMeta[id]
-                    resourceMeta[id] = ResourceMeta(
-                        mime = existing?.mime ?: "",
-                        ext = when {
-                            existing?.ext?.isNotEmpty() == true -> existing.ext
-                            ext.isNotEmpty() -> ext
-                            else -> ""
-                        },
-                    )
+                // Tar-safety: resource names become part of stored file
+                // names downstream — reject anything that escapes the
+                // resources/ namespace (nested paths, traversal segments).
+                val safe = rest.isNotEmpty() && !rest.contains("..") &&
+                    !rest.contains('/') && !rest.contains('\\')
+                if (safe) {
+                    val id = rest.substringBeforeLast('.')
+                    val ext = rest.substringAfterLast('.', "")
+                    if (id.isNotEmpty()) {
+                        resourceBytes[id] = payload
+                        val existing = resourceMeta[id]
+                        resourceMeta[id] = ResourceMeta(
+                            mime = existing?.mime ?: "",
+                            ext = when {
+                                existing?.ext?.isNotEmpty() == true -> existing.ext
+                                ext.isNotEmpty() -> ext
+                                else -> ""
+                            },
+                        )
+                    }
                 }
                 continue
             }
@@ -102,22 +114,22 @@ object JexImport {
                         notes.add(
                             ImportedNote(
                                 id = id,
-                                title = metadata.fields["title"].orEmpty(),
-                                body = metadata.body ?: "",
+                                title = metadata.title,
+                                body = metadata.bodyText,
                                 notebookId = metadata.fields["parent_id"],
                                 createdAt = metadata.date("created_time"),
                                 updatedAt = metadata.date("updated_time"),
-                                resources = resourceTargets(metadata.body ?: ""),
+                                resources = resourceTargets(metadata.bodyText),
                             )
                         )
                     }
                 }
                 2 -> {
-                    val title = text.substringBefore("\n").trim()
                     notebooks.add(
                         ImportedNotebook(
                             id = metadata.fields["id"].orEmpty(),
-                            title = title,
+                            title = if (metadata.title.isNotEmpty()) metadata.title
+                            else metadata.fields["title"].orEmpty(),
                             parentId = metadata.fields["parent_id"],
                             createdAt = metadata.date("created_time"),
                         )
@@ -156,12 +168,25 @@ object JexImport {
 
     // MARK: - Per-type extraction
 
-    /** `![alt](../resources/<id>.<ext>)` is what Joplin writes; also raw `:/<id>` links. */
+    /**
+     * `![alt](../resources/<id>.<ext>)` is what Joplin writes; this app's
+     * own exports keep the body's `speechnotes://note-image/<hash>.<ext>`
+     * links, whose resource id is the leading 32 hex of the (SHA-256)
+     * content hash — matching those too means a round-trip re-stores the
+     * bytes under the note even when the note gets a fresh id, and legacy
+     * short-hash archives (the old FNV names) map by their full hash.
+     */
     private fun resourceTargets(body: String): Map<String, String> {
         if (!body.contains("resources/") && !body.contains("](")) return emptyMap()
         val found = LinkedHashMap<String, String>()
-        val regex = Regex("""(?:\.\./)?resources/([0-9a-fA-F]{32})\.([A-Za-z0-9]+)""")
-        for (match in regex.findAll(body)) found[match.groupValues[1]] = match.value
+        val joplin = Regex("""(?:\.\./)?resources/([0-9a-fA-F]{32})\.([A-Za-z0-9]+)""")
+        for (match in joplin.findAll(body)) found[match.groupValues[1]] = match.value
+        val local = Regex("""speechnotes://note-image/([0-9a-fA-F]{8,64})\.([A-Za-z0-9]+)""")
+        for (match in local.findAll(body)) {
+            val hash = match.groupValues[1].lowercase()
+            val id = if (hash.length >= 32) hash.take(32) else hash
+            if (!found.containsKey(id)) found[id] = match.value
+        }
         return found
     }
 
@@ -232,46 +257,60 @@ object JexImport {
 
     // MARK: - Metadata block
 
-    /** The trailing `key: value` block that ends with `type_: N`. */
+    /**
+     * The trailing `key: value` block that ends with `type_: N`, read with
+     * Joplin's `BaseItem.unserialize` semantics: scan lines from the END
+     * collecting `key: value` props until the first blank line; the lines
+     * above it are the body part whose FIRST line is the title (the parser
+     * splices title + blank away). A present `title:` prop marks this app's
+     * OLD export layout (body verbatim, title from the prop) — Joplin's own
+     * serializer never writes `title:` as a prop. Tolerates trailing blank
+     * lines, which only old exports end files with.
+     */
     private class MetadataBlock private constructor(
         val type: Int,
         val fields: Map<String, String>,
-        val body: String?,
+        val title: String,
+        val bodyText: String,
     ) {
         companion object {
             fun parse(entry: String): MetadataBlock? {
-                // Anchor on the LAST `type_:` line and walk back to the blank
-                // line that begins the block. The search runs over everything
-                // up to the END of the type_ line, so it finds the separator
-                // whether type_ comes first (Joplin) or last (this app's
-                // exporter). A resource metadata file has NO body — its block
-                // starts at the top with no blank line; that is valid too.
-                val typeIndex = entry.lastIndexOf("\ntype_: ")
-                if (typeIndex < 0) return null
-                val typeLineEnd = entry.indexOf('\n', typeIndex + 1).let { if (it < 0) entry.length else it }
-                val headAndType = entry.substring(0, typeLineEnd)
-                val blank = headAndType.lastIndexOf("\n\n")
-                return if (blank >= 0) {
-                    parseBlock(entry.substring(blank + 2), entry.substring(0, blank))
-                } else {
-                    parseBlock(entry, "")
-                }
-            }
+                val lines = entry.split('\n').toMutableList()
+                while (lines.isNotEmpty() && lines.last().isBlank()) lines.removeAt(lines.lastIndex)
+                if (lines.isEmpty()) return null
 
-            private fun parseBlock(block: String, body: String): MetadataBlock? {
                 val fields = HashMap<String, String>()
                 var type = 0
-                for (line in block.lineSequence()) {
+                var bodyEnd = -1 // exclusive end of the body part
+                var index = lines.size - 1
+                while (index >= 0) {
+                    val line = lines[index].trim()
+                    if (line.isEmpty()) {
+                        bodyEnd = index
+                        break
+                    }
                     val colon = line.indexOf(':')
-                    if (colon <= 0) continue
+                    if (colon <= 0) return null
                     val key = line.substring(0, colon).trim()
                     val value = line.substring(colon + 1).trim()
-                    if (key.isEmpty()) continue
                     if (key == "type_") type = value.toIntOrNull() ?: 0
                     else fields[key] = value
+                    index--
                 }
                 if (type == 0) return null
-                return MetadataBlock(type, fields, body)
+
+                val bodyLines = if (bodyEnd >= 0) lines.subList(0, bodyEnd) else emptyList()
+                val legacyTitle = fields["title"]
+                return if (!legacyTitle.isNullOrEmpty()) {
+                    MetadataBlock(type, fields, legacyTitle, bodyLines.joinToString("\n"))
+                } else {
+                    val title = bodyLines.firstOrNull()?.trim() ?: ""
+                    // The splice removes the title line AND the blank
+                    // separator; with neither left (title-only file) the
+                    // body is empty.
+                    val body = if (bodyLines.size > 2) bodyLines.subList(2, bodyLines.size).joinToString("\n") else ""
+                    MetadataBlock(type, fields, title, body)
+                }
             }
         }
 

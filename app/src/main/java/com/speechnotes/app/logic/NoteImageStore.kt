@@ -41,10 +41,42 @@ object NoteImageStore {
     /** Stores raw image bytes and returns the markdown target. */
     fun store(data: ByteArray, ext: String, noteId: String?, alt: String = "image"): String? {
         val dir = directoryFor(noteId) ?: return null
-        val hash = TextHash.of(String(data, Charsets.ISO_8859_1)).toString(16).padStart(8, '0')
-        val file = File(dir, "$hash.$ext")
+        val hash = sha256Hex(data)
+        val cleanExt = sanitiseExtension(ext) ?: "bin"
+        val file = File(dir, "$hash.$cleanExt")
         file.writeBytes(data)
-        return SCHEME + "$hash.$ext"
+        return SCHEME + "$hash.$cleanExt"
+    }
+
+    /**
+     * SHA-256 of the raw bytes as 64 lowercase hex chars (iOS NoteImageStore
+     * parity: images are deduped by content hash). The old 64-bit FNV hash
+     * produced 8–16-char names that could never satisfy Joplin's 32-hex
+     * resource-id contract, which is what broke the .jex image round-trip.
+     */
+    private fun sha256Hex(data: ByteArray): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(data)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Extension allowlist for anything stored under note-images — the value
+     * flows into file names (and .jex resource names), so path junk dies
+     * here. Ported from NoteImageStore.swift `sanitiseExtension`.
+     */
+    fun sanitiseExtension(raw: String?): String? {
+        var ext = raw?.lowercase()?.trim() ?: return null
+        if (ext.isEmpty()) return null
+        if (ext.startsWith(".")) ext = ext.substring(1)
+        val slash = ext.indexOf('/')
+        if (slash >= 0) ext = ext.substring(0, slash)
+        val q = ext.indexOf('?')
+        if (q >= 0) ext = ext.substring(0, q)
+        return when (ext) {
+            "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tiff", "bmp" ->
+                if (ext == "jpeg") "jpg" else ext
+            else -> "bin"
+        }
     }
 
     /** Every stored target for a note. */

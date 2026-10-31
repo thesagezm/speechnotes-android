@@ -111,6 +111,11 @@ class ZipReader private constructor(private val entries: Map<String, ByteArray>)
 
                 // Directory entry?
                 if (name.endsWith("/")) continue
+                // Tar/zip-safety: member names must never escape the
+                // container namespace. Entries are served by exact-name
+                // lookup today, but any future caller that turns a member
+                // name into a file path is protected here.
+                if (name.startsWith("/") || name.split('/').any { it == ".." }) continue
 
                 val raw = readLocalEntry(data, localOffset, method, compressedSize) ?: continue
                 if (raw.size != uncompressedSize && method == 0) continue

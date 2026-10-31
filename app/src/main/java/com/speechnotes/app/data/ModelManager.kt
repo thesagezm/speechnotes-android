@@ -276,8 +276,9 @@ class ModelManager(private val context: Context) {
     /**
      * Materializes every `speechnotes://note-image/<hash>.<ext>` reference
      * in the note's markdown as a Joplin resource payload. Joplin wants
-     * 32-hex resource ids; NoteImageStore's content hashes are longer, so
-     * the leading 32 are used (collision-safe at this scale, iOS parity).
+     * 32-hex resource ids; NoteImageStore's SHA-256 content hashes are 64
+     * hex chars, so the leading 32 are used (collision-safe at this scale,
+     * iOS parity).
      */
     private fun jexImages(note: Note): List<com.speechnotes.app.logic.JexExport.ImagePayload> {
         val targets = com.speechnotes.app.logic.NoteImageStore.allTargets(note.id)
@@ -286,15 +287,21 @@ class ModelManager(private val context: Context) {
             val parsed = com.speechnotes.app.logic.NoteImageStore.parseLocalTarget(target) ?: return@mapNotNull null
             val file = com.speechnotes.app.logic.NoteImageStore.resolveLocalFile(target, note.id) ?: return@mapNotNull null
             val data = runCatching { file.readBytes() }.getOrNull() ?: return@mapNotNull null
+            val ext = parsed.second.lowercase()
+            // Resource ids/names ride into the tar and later into file
+            // paths on import — only clean single-token extensions export.
+            if (!Regex("[a-z0-9]{1,16}").matches(ext)) return@mapNotNull null
             com.speechnotes.app.logic.JexExport.ImagePayload(
                 id = parsed.first.take(32).lowercase(),
-                fileExtension = parsed.second,
-                mimeType = when (parsed.second.lowercase()) {
+                fileExtension = ext,
+                mimeType = when (ext) {
                     "png" -> "image/png"
                     "jpg", "jpeg" -> "image/jpeg"
                     "gif" -> "image/gif"
                     "webp" -> "image/webp"
                     "heic", "heif" -> "image/heic"
+                    "tiff" -> "image/tiff"
+                    "bmp" -> "image/bmp"
                     else -> "application/octet-stream"
                 },
                 data = data,

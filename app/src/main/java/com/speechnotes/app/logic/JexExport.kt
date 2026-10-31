@@ -4,13 +4,16 @@ import java.io.ByteArrayOutputStream
 
 /**
  * Joplin-compatible JEX export. A `.jex` file is a plain (uncompressed) tar
- * containing `<id>.md` files whose trailing metadata block Joplin parses on
- * import. Ported from JexExport.swift (speechnotes-ios).
+ * containing `<id>.md` files laid out the way Joplin's own
+ * `BaseItem.serialize` writes them — `title\n\nbody\n\nprops`, with `type_`
+ * as the last prop and no trailing newline. Ported from JexExport.swift
+ * (speechnotes-ios v1.8.1).
  *
  * Entry catalog Joplin consumes:
- *   <note-id>.md     — note body + metadata + `type_: 1`
+ *   <note-id>.md     — title line + body + metadata + `type_: 1`
  *   <folder-id>.md   — notebook title line + metadata + `type_: 2`
- *   <resource-id>.md — empty body + metadata (id, title=filename, mime) + `type_: 4`
+ *   <resource-id>.md — filename title line + metadata (id, mime,
+ *                      file_extension) + `type_: 4`
  *   resources/<resource-id>.<ext> — the binary blob
  */
 object JexExport {
@@ -65,6 +68,10 @@ object JexExport {
             writeString("        ", 148, 8) // chksum placeholder: 8 spaces
             header[156] = '0'.code.toByte() // type: regular file
             writeString("ustar", 257, 6)
+            // "ustar\0" + "00" — the exact 8 bytes node-tar (Joplin's
+            // extractor) matches to treat a header as ustar (iOS v1.8.1
+            // parity; a bare "ustar" left it a v7 header).
+            writeString("00", 263, 2)
             var checksum = 0
             for (b in header) checksum += (b.toInt() and 0xFF)
             writeOctal(checksum.toLong(), 148, 8)
@@ -82,51 +89,73 @@ object JexExport {
 
     // MARK: - Metadata
 
-    private fun iso(epochMillis: Long): String {
-        val instant = java.time.Instant.ofEpochMilli(epochMillis)
-        return java.time.format.DateTimeFormatter.ISO_INSTANT.format(instant)
-    }
+    private val isoFormatter =
+        java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+            .withZone(java.time.ZoneOffset.UTC)
 
-    /** Trailing metadata block Joplin's importer anchors on; `type_` LAST. */
-    private fun metadataBlock(fields: List<Pair<String, String>>, type: Int): String {
-        val lines = fields.map { "${it.first}: ${it.second}" }
-        return "\n\n" + (lines + "type_: $type").joinToString("\n") + "\n"
-    }
+    private fun iso(epochMillis: Long): String = isoFormatter.format(java.time.Instant.ofEpochMilli(epochMillis))
 
+    /**
+     * Trailing metadata block, mirroring Joplin's serializer: props joined
+     * by single newlines, `type_` last, and NO trailing newline. Joplin's
+     * `unserialize` scans lines from the END and stops at the first blank
+     * line — one trailing newline and it reads zero props, which aborts the
+     * entire import (iOS v1.8.1 parity).
+     */
+    private fun metadataBlock(fields: List<Pair<String, String>>, type: Int): String =
+        (fields + ("type_" to type.toString())).joinToString("\n") { "${it.first}: ${it.second}" }
+
+    /**
+     * File layout mirrors Joplin's `BaseItem.serialize`:
+     * `title\n\nbody\n\nprops`. The title rides the FIRST body line
+     * (Joplin's parser takes it from there and overwrites any `title:`
+     * prop), and the props block carries `user_created_time` /
+     * `user_updated_time` so Joplin keeps the note's own timestamps
+     * (iOS v1.8.1 parity).
+     */
     private fun noteEntry(note: NotePayload): Pair<String, ByteArray> {
         val fields = ArrayList<Pair<String, String>>()
         fields.add("id" to note.id)
-        if (note.notebookId != null) fields.add("parent_id" to note.notebookId)
+        note.notebookId?.let { fields.add("parent_id" to it) }
         fields.add("created_time" to iso(note.createdAt))
         fields.add("updated_time" to iso(note.updatedAt))
-        fields.add("markup_language" to "1")
-        // Joplin's importer reads the note title from metadata; without a
-        // title field every note re-titles itself from its first body line
-        // on the Joplin side, and an Android→Joplin→Android round-trip loses
-        // the explicit title entirely.
-        if (note.title.isNotBlank()) fields.add("title" to note.title)
-        val body = note.markdownBody + metadataBlock(fields, 1)
-        return "${note.id}.md" to body.toByteArray(Charsets.UTF_8)
+        fields.add("user_created_time" to iso(note.createdAt))
+        fields.add("user_updated_time" to iso(note.updatedAt))
+        val props = metadataBlock(fields, 1)
+        val parts = ArrayList<String>()
+        parts.add(note.title.trim())
+        val body = note.markdownBody.trimEnd()
+        if (body.isNotEmpty()) parts.add(body)
+        parts.add(props)
+        return "${note.id}.md" to parts.joinToString("\n\n").toByteArray(Charsets.UTF_8)
     }
 
     private fun notebookEntry(nb: NotebookPayload): Pair<String, ByteArray> {
         val fields = ArrayList<Pair<String, String>>()
         fields.add("id" to nb.id)
-        if (nb.parentId != null) fields.add("parent_id" to nb.parentId)
+        nb.parentId?.let { fields.add("parent_id" to it) }
         fields.add("created_time" to iso(nb.createdAt))
-        val body = nb.title + metadataBlock(fields, 2)
+        // Folders carry no updated timestamp of their own; Joplin's folder
+        // records want one, and created_time is the honest value we have.
+        fields.add("updated_time" to iso(nb.createdAt))
+        val body = nb.title.trim() + "\n\n" + metadataBlock(fields, 2)
         return "${nb.id}.md" to body.toByteArray(Charsets.UTF_8)
     }
 
+    /** A resource's title line is its `id.ext` filename — what Joplin's
+     *  `Resource.filename` resolves to and what the importer matches the
+     *  binary in `resources/` against. */
     private fun resourceMetadataEntry(image: ImagePayload): Pair<String, ByteArray> {
+        val now = iso(System.currentTimeMillis())
         val fields = listOf(
             "id" to image.id,
-            "title" to "${image.id}.${image.fileExtension}",
             "mime" to image.mimeType,
+            "file_extension" to image.fileExtension,
             "filename" to "",
-            "created_time" to iso(System.currentTimeMillis()),
+            "created_time" to now,
+            "updated_time" to now,
         )
-        val body = metadataBlock(fields, 4)
+        val body = "${image.id}.${image.fileExtension}" + "\n\n" + metadataBlock(fields, 4)
         return "${image.id}.md" to body.toByteArray(Charsets.UTF_8)
     }
 
