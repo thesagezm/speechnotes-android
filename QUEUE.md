@@ -19,6 +19,26 @@ remaining Waydroid verification items are listed under Pending Queue.
 
 ## User Feedback Pending
 
+0. **2026-10-31 — the pack dispatch (NEWEST, in flight):** the user chartered
+   a three-agent pack led by Albus — **Harry** (GUI), **Hermione**
+   (functionality/security/trim), **Ron** (TTS/OCR) — coordinating through
+   `ANDROID-REVIEW.md`. Feedback being addressed:
+   - **Harry:** minimize playback bar (more viewing space in notes/books),
+     landscape rail + its minimization, **Stats as its own tab** (not in
+     Settings), pomodoro brought to the latest (iOS v1.8.x) standard, stats
+     UI improvement, biggest UI bugs.
+   - **Hermione:** BookDrop updates/bugs fixed in speechnotes-ios v1.8.1;
+     saving within + sending from the app **without the file picker**; JEX
+     import/export per the latest working code (fix what prevented it); all
+     settings work; symbols + math formulas render in markdown preview AND
+     are read correctly by TTS; security loopholes.
+   - **Ron:** TTS fast, no artifacts, no skipped/failed words, select
+     word/paragraph to start reading from; OCR when importing files into
+     notes (not just CamScanner PDFs — see the iOS implementation), TTS
+     reads OCR content, native PDF text combined with OCRed text, Google
+     bundled ML Kit (pre-approved by the user; already declared 16.0.1).
+   Unit mapping is under In Flight. Coordination rules live in
+   `ANDROID-REVIEW.md` (build/device locks, claim protocol, read-only git).
 1. **"start analysing ways to make the tts much much faster… iOS set maximum
    tokens from the previous generation seconds — completely increased the
    speed of generation and prevented stopping of tts"** — ADDRESSED: the
@@ -58,6 +78,28 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-10-31 — PACK WAVE (three agents in parallel, coordinated via
+  `ANDROID-REVIEW.md`):**
+  - **Harry:** H1 editor preview lock-in (P0-1) → H2 Stats as 4th tab →
+    H3 minimize playback bar (draggable bubble, iOS GlobalMiniPlayerOverlay)
+    → H4 landscape PlaybackRail + minimize (iOS PlaybackRail.swift) →
+    H5 pomodoro to v1.8.x standard (PomodoroEngine/Store/Views port,
+    onboarding page, juice bubbles, flowmodoro, keep-screen-on) →
+    H6 P2 bug sweep (empty-all confirm, True Black label, scope-empty state,
+    ±15 s glyphs, adaptive books grid).
+  - **Hermione:** M1 JEX round-trip (P0-3, image hash bug) + v1.8.x JEX
+    parity → M2 BookDrop v1.8.1 port (dbc0677 transfer fix + byte progress
+    both ways + NEW sender P1-3 + P0-6 allowlist) → M3 save/send without
+    file picker → M4 MathNotation/MathCommands port + preview rendering +
+    TTS word forms → M5 settings audit + security pass (tar path traversal,
+    FileProvider scope, WebView bridge, backup exposure) + trim.
+  - **Ron:** R1 0b seconds-based render-ahead bank (P0-7) → R2 0c never-run-dry
+    silence bridge → R3 playFrom primitive + select word/paragraph start
+    (notes + books, P0-2) → R4 OCR into notes via ML Kit → R5 PDF
+    native+OCR merge + force-OCR toggle + badges (P1-7) → R6 TTS polish
+    (start-stall watchdog, Kokoro-small network download, lock-screen skips).
+  - Environment at dispatch: Waydroid RUNNING + adb authorized; disk 57%;
+    115/115 tests green baseline.
 - **Unit 0a (seconds-based ChunkSchedule) COMPLETE + verified on Waydroid** —
   see Completed Units.
 - **Waydroid audio caveat this boot (2026-10-24 ~23:52)**: playback reached
@@ -82,6 +124,9 @@ commit, `git push` after verify, and NO machine identifiers in any file.
   evidence NOT collected.
 
 ## Pending Queue
+
+> 2026-10-31: items 0, 3, 4 and parts of 1 are assigned to the pack wave —
+> see In Flight for the agent mapping; progress lands there first, then here.
 
 0. **TTS generation speed (user feedback):**
    - **0a — seconds-based ChunkSchedule: SHIPPED + Waydroid-verified**
