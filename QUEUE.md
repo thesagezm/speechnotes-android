@@ -291,6 +291,26 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Completed Units
 
+- **2026-11-07 — RELEASE BUILD for user hands-on testing (R8 release,
+  per-ABI splits).** Built from the pack-wave checkpoint `72b62ad`:
+  `app-arm64-v8a-release.apk` (58 MB, phone) + `app-x86_64-release.apk`
+  (65 MB, Waydroid), copied to the user's Downloads as
+  `Speechnotes-1.1.4-<abi>-release.apk`. versionCode/versionName UNCHANGED
+  (6 / 1.1.4 — no bump without instruction).
+  **Albus release verification (the minified build is the risky one):**
+  R8 reported no missing-class errors; the APK carries
+  `libonnxruntime.so`, `libonnxruntime4j_jni.so` and
+  `libmlkit_google_ocr_pipeline.so` (the bundled OCR pipeline);
+  installed on Waydroid, launched clean — `Displayed +1s0ms`, no
+  FATAL/ClassNotFound/UnsatisfiedLink; the 4-tab nav renders; and the
+  NEURAL PATH WORKS IN THE RELEASE BUILD: engine switched to
+  "Kokoro — small · int8" (Ready · fully offline), Play →
+  `KokoroEngine state: IDLE → GENERATING` → `58 tokens → 2.2s audio in
+  4.23s` → `GENERATING → SPEAKING` → then the KNOWN container pathology
+  (head frozen at 0/52200, HAL never drains) ended the session visibly via
+  Ron's dead-head guard (15 s bound) → `SPEAKING → IDLE`. Audible
+  confirmation remains the user's call on real hardware.
+
 - **2026-11-07 — PACK WAVE checkpoint (Harry H1–H6 · Hermione M1–M4 ·
   Ron R1–R6).** Code-complete: 225/225 JVM tests green (forced rerun),
   x86_64 APK built (89 MB), installed on Waydroid (push + `pm install` —
