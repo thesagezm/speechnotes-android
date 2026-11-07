@@ -52,6 +52,83 @@ object MarkdownText {
 
     data class LinkReference(val label: String, val url: String, val title: String?)
 
+    // MARK: - Maths (MathNotation wiring)
+    //
+    // Formulas are extracted BEFORE any other rule runs — the escape and
+    // emphasis machinery would chew the LaTeX. Extracted regions become
+    // sentinel placeholders that survive every rule untouched, then restore
+    // as SPOKEN words (the speech paths) or DISPLAY glyphs (the reading
+    // paths). The stash is per-document, so placeholder indices are global
+    // across blocks and the restore can run on the joined speech text.
+
+    private const val MATH_OPEN = '\u0002'
+    private const val MATH_CLOSE = '\u0003'
+
+    private class MathStash {
+        val segments = ArrayList<MathNotation.Segment>()
+
+        fun protect(line: String): String {
+            if (!line.contains('$') && !line.contains('\\')) return line
+            val parsed = MathNotation.segments(line)
+            if (parsed.parts.all { it is MathNotation.SegmentLine.Part.Text }) return line
+            val out = StringBuilder(line.length)
+            for (part in parsed.parts) {
+                when (part) {
+                    is MathNotation.SegmentLine.Part.Text -> out.append(part.text)
+                    is MathNotation.SegmentLine.Part.Math -> {
+                        out.append(MATH_OPEN).append(segments.size).append(MATH_CLOSE)
+                        segments.add(part.segment)
+                    }
+                }
+            }
+            return out.toString()
+        }
+    }
+
+    /** Replaces every placeholder in [text] with its spoken or display form. */
+    private fun restoreMath(text: String, segments: List<MathNotation.Segment>, spoken: Boolean): String {
+        if (segments.isEmpty() || !text.contains(MATH_OPEN)) return text
+        val out = StringBuilder(text.length)
+        var i = 0
+        while (i < text.length) {
+            if (text[i] == MATH_OPEN) {
+                var digits = ""
+                var scan = i + 1
+                while (scan < text.length && text[scan].isDigit()) {
+                    digits += text[scan]; scan++
+                }
+                val n = digits.toIntOrNull()
+                if (n != null && scan < text.length && text[scan] == MATH_CLOSE && n < segments.size) {
+                    val segment = segments[n]
+                    out.append(if (spoken) segment.spoken else segment.display)
+                    i = scan + 1
+                    continue
+                }
+            }
+            out.append(text[i])
+            i++
+        }
+        return out.toString()
+    }
+
+    /** Display-form restore across the reading-view blocks. */
+    private fun restoreDisplayMath(
+        block: MarkdownBlock,
+        segments: List<MathNotation.Segment>,
+    ): MarkdownBlock = when (block) {
+        is MarkdownBlock.Heading -> block.copy(text = restoreMath(block.text, segments, spoken = false))
+        is MarkdownBlock.Paragraph -> block.copy(text = restoreMath(block.text, segments, spoken = false))
+        is MarkdownBlock.Quote -> block.copy(text = restoreMath(block.text, segments, spoken = false))
+        is MarkdownBlock.BulletList -> block.copy(items = block.items.map { it.copy(text = restoreMath(it.text, segments, spoken = false)) })
+        is MarkdownBlock.OrderedList -> block.copy(items = block.items.map { it.copy(text = restoreMath(it.text, segments, spoken = false)) })
+        is MarkdownBlock.Image -> block.copy(alt = restoreMath(block.alt, segments, spoken = false))
+        is MarkdownBlock.Table -> block.copy(
+            headers = block.headers.map { restoreMath(it, segments, spoken = false) },
+            rows = block.rows.map { row -> row.map { restoreMath(it, segments, spoken = false) } },
+        )
+        is MarkdownBlock.Code, MarkdownBlock.Divider -> block
+    }
+
     // MARK: - Regex cache (compiled once, reused)
 
     private val regexCache = HashMap<String, Regex>()
@@ -108,12 +185,14 @@ object MarkdownText {
      */
     fun plainText(markdown: String): String {
         val refs = linkReferences(markdown)
-        val parsed = blocks(markdown, refs)
+        val (parsed, stash) = parseBlocks(markdown, refs)
         val spoken = parsed.mapNotNull { block ->
             val text = speechText(block, refs)
             if (text.isEmpty()) null else text
         }.joinToString("\n\n")
-        return SpeechSanitizer.clean(spoken)
+        // Speech path: formulas restore as SPOKEN words (never glyphs).
+        val withMath = restoreMath(spoken, stash.segments, spoken = true)
+        return SpeechSanitizer.clean(withMath)
     }
 
     private fun speechText(block: MarkdownBlock, refs: Map<String, LinkReference>): String = when (block) {
@@ -143,8 +222,17 @@ object MarkdownText {
     fun speechInline(text: String, references: Map<String, LinkReference> = emptyMap()): String {
         if (text.isEmpty()) return text
 
+        // 0. Maths FIRST, on the raw text: the LaTeX must reach
+        // MathNotation intact, before escapes are stashed or emphasis
+        // markers fire. Regions become placeholders that survive steps
+        // 1-9 and restore as SPOKEN words at the end. (Text arriving from
+        // parseBlocks already carries document-level placeholders — no `$`
+        // or `\` in them — and is restored by the caller's global stash.)
+        val mathStash = MathStash()
+        val mathLine = mathStash.protect(text)
+
         // 1. Protect backslash escapes so `\*` never looks like emphasis.
-        val (line0, stash) = protectEscapes(text)
+        val (line0, stash) = protectEscapes(mathLine)
         var line = line0
 
         // 2. Footnote markers are silent.
@@ -176,8 +264,9 @@ object MarkdownText {
         line = replace(line, """<br\s*/?>""", "\n", setOf(RegexOption.IGNORE_CASE))
         line = replace(line, """</?[A-Za-z][^>]*>""", "")
 
-        // 9. Restore escapes.
-        return restoreEscapes(line, stash)
+        // 9. Restore escapes, then maths (spoken).
+        val restored = restoreEscapes(line, stash)
+        return restoreMath(restored, mathStash.segments, spoken = true)
     }
 
     private val emphasisRules: List<Pair<String, String>> = listOf(
@@ -241,6 +330,19 @@ object MarkdownText {
     fun blocks(markdown: String): List<MarkdownBlock> = blocks(markdown, linkReferences(markdown))
 
     fun blocks(markdown: String, refs: Map<String, LinkReference>): List<MarkdownBlock> {
+        val (parsed, stash) = parseBlocks(markdown, refs)
+        // Reading view + PDF: formulas restore as DISPLAY glyphs.
+        return parsed.map { restoreDisplayMath(it, stash.segments) }
+    }
+
+    /**
+     * The block parser proper: math regions are pulled out into the stash
+     * FIRST (the escape/emphasis rules must never see LaTeX) and every
+     * content line carries global placeholders. Fenced code is untouched —
+     * its content is literal by definition.
+     */
+    private fun parseBlocks(markdown: String, refs: Map<String, LinkReference>): Pair<List<MarkdownBlock>, MathStash> {
+        val mathStash = MathStash()
         val lines = normalize(markdown).split("\n")
         val result = ArrayList<MarkdownBlock>()
         val paragraph = ArrayList<String>()
@@ -322,6 +424,8 @@ object MarkdownText {
                 line = if (close >= 0) line.substring(0, open) + line.substring(close + 3)
                 else { inHTMLComment = true; line.substring(0, open) }
             }
+            // ---- Maths: extract formulas before any rule chews the LaTeX ----
+            line = mathStash.protect(line)
             val trimmed = line.trim()
             if (trimmed.isEmpty()) { flushAll(); continue }
 
@@ -407,7 +511,7 @@ object MarkdownText {
 
         if (fenceChar != null) flushCode()
         flushAll()
-        return result
+        return result to mathStash
     }
 
     // MARK: - Inline runs (preview)

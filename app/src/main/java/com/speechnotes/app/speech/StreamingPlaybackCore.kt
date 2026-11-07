@@ -8,7 +8,6 @@ import com.speechnotes.app.logic.TextHash
 import com.speechnotes.app.logic.WavWriter
 import java.io.File
 import java.util.concurrent.Executors
-import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
 
@@ -90,6 +89,15 @@ class StreamingPlaybackCore(
     private var totalFramesWritten = 0
 
     /**
+     * [totalFramesWritten] at the moment the CURRENT AudioTrack was created.
+     * A recreated track (sample-rate change mid-engine) restarts its playback
+     * head at 0 while the running total keeps climbing — the bank arithmetic
+     * must subtract the base so the two counts stay in the same coordinate
+     * space (RenderAheadBankPolicy.bankedSeconds). Generate-queue confined.
+     */
+    private var trackBaseFrames = 0
+
+    /**
      * Wall-clock seconds the previous chunk took to synthesize. Sets the
      * prebuffer floor: if chunk N took 3.4 s to render, the bank must hold
      * ≥ 4.4 s before the track starts, or the drain catches up mid-render
@@ -98,6 +106,30 @@ class StreamingPlaybackCore(
      */
     @Volatile
     private var lastChunkRenderSeconds: Double = 0.0
+
+    // MARK: Never-run-dry keepalive (the silence bridge, iOS 241888e).
+    // When the playback head consumes everything written while the next
+    // chunk is still to be rendered, the AudioTrack's real queue is dry —
+    // AudioFlinger then underruns and DISABLES the track, the head freezes,
+    // and the session dies in silence even though synthesis is about to
+    // land (the Waydroid frozen-head-at-0 pathology: HAL write blocked →
+    // BUFFER TIMEOUT: remove from active list → completion poller spins at
+    // head 0). The bridge pre-writes keepalive silence before the render so
+    // the track never idles. DIVERGENCE from iOS: AVAudioPlayerNode re-arms
+    // 0.5 s buffers from their own completions on the main thread while the
+    // renderer works; Android's single-writer generate queue cannot write
+    // mid-render, so it writes ONE keepalive sized to outlast the expected
+    // render (measured last render + margin) at the moment it admits the
+    // chunk. The listener hears the same silence they would have heard
+    // anyway — but speech RESUMES when synthesis lands.
+
+    /** Silence bridged in the current dry spell — incident log ledger. */
+    @Volatile
+    private var bridgeIncidentSeconds = 0.0
+
+    /** True once an incident exceeded the safety cap — stop bridging this session. */
+    @Volatile
+    private var bridgeDisabled = false
 
     // MARK: Session metrics for the chunk schedule (ChunkSchedule.State).
     // Written on the generate queue (inside schedule()), read on main when
@@ -212,6 +244,9 @@ class StreamingPlaybackCore(
         scheduledUpTo = -1
         totalFramesWritten = 0
         trackStarted = false
+        // Fresh keepalive ledger for the fresh session.
+        bridgeIncidentSeconds = 0.0
+        bridgeDisabled = false
         // Fresh session metrics: the previous session was reported by the
         // stop() above.
         scheduledBufferCount = 0
@@ -224,19 +259,99 @@ class StreamingPlaybackCore(
         paused.set(false)
         state = SpeechState.GENERATING
 
+        // R6a — the never-started start-stall watchdog (iOS StreamingTTSPlaybackCore
+        // background-health parity, the foreground tail-stall guard's sibling).
+        // A session that reaches GENERATING and then produces NO buffer — a
+        // wedged model load, a generateChunk that never returns — used to sit
+        // there forever: UI on Pause-able GENERATING, no audio, no error, and
+        // the R2 bridge (rightly) never arms because there is no track. One
+        // check at [START_STALL_SECONDS]: still nothing scheduled, still
+        // running, not paused → the synthesis is provably dead; end the
+        // session visibly (IDLE, error log) rather than loop silence forever.
+        // Fires on main; the scheduledBufferCount read is the @Volatile the
+        // generate queue maintains.
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (g == generation && running.get() && !paused.get() && scheduledBufferCount == 0) {
+                LogStore.error(
+                    "${config.logPrefix}: start-stall watchdog — no audio buffer ${START_STALL_SECONDS.toInt()}s " +
+                        "after GENERATING (model load or first render wedged); ending the session"
+                )
+                BeepPlayer.softError()
+                state = SpeechState.IDLE
+                running.set(false)
+            }
+        }, START_STALL_SECONDS)
+
         generateQueue.execute {
-            // The gate is the bank: acquire a permit per chunk, release one
-            // per chunk actually scheduled. Its capacity is the bank target
-            // in CHUNKS — recomputed from the bank's seconds so a slow chunk
-            // and a packed chunk cost the same protection. A semaphore needs
-            // ≥1 permit to ever pass; a tiny target (critical thermal) still
-            // admits one chunk at a time.
-            val bankChunks = maxOf(1, (config.bankTargetSeconds / 4.0).toInt())
-            val gate = Semaphore(bankChunks)
+            // Pacing IS the bank, in audio seconds (RenderAheadBankPolicy —
+            // iOS StreamingTTSPlaybackCore): hold before rendering the next
+            // chunk until the banked depth (frames written minus the live
+            // playback head) drains below the seconds target. The old gate
+            // was a CHUNK-COUNT semaphore (target/4 chunks), but chunk audio
+            // length varies ~40× — "7 chunks ahead" is anywhere from 3.5 s to
+            // 140 s of protection. Seconds measure the thing the listener
+            // actually hears run out. The head advances on the audio thread,
+            // so the wait is a poll: 50 ms is fine against a 30 s bank and
+            // free on the generate queue. allows() admits on any drain, so a
+            // target below one chunk's audio length cannot wedge the producer.
+            val bankTarget = config.bankTargetSeconds
             for ((index, chunk) in utteranceChunks.withIndex()) {
                 if (!running.get() || g != generation) return@execute
-                // Pacing: block while the producer is ahead of playback.
-                runCatching { gate.acquire() }
+                var holdPolls = 0
+                // Dead-sink escape for the hold: a full bank drains only
+                // through the playback head. If the head does not move for
+                // 15 s while the bank is full and we are not paused, the
+                // audio sink is dead (the Waydroid HAL freeze) — holding
+                // forever would wedge the session at SPEAKING with no
+                // completion poller running mid-session. Same bound as the
+                // completion poller's dead-head guard.
+                var frozenHead = -1L
+                var frozenPolls = 0
+                while (running.get() && g == generation &&
+                    !RenderAheadBankPolicy.allows(bankedSeconds(), bankTarget)
+                ) {
+                    // While holding, keep reviving a track an underrun may
+                    // have disabled — the head cannot advance on a disabled
+                    // track, so the bank would never drain without this
+                    // (play() on a live track is a no-op). Logged at most
+                    // every 5 s of continuous holding, so a slow device's
+                    // routine holding doesn't flood the log.
+                    if (!paused.get() && holdPolls % 20 == 0) runCatching { audioTrack?.play() }
+                    if (holdPolls == 40 || (holdPolls > 0 && holdPolls % 100 == 0)) {
+                        LogStore.info(
+                            "${config.logPrefix}: bank full — holding chunk $index " +
+                                "(banked %.1fs / target %.1fs)"
+                                    .format(bankedSeconds(), bankTarget)
+                        )
+                    }
+                    if (!paused.get()) {
+                        val head = runCatching { audioTrack?.playbackHeadPosition?.toLong() }
+                            .getOrDefault(-1L) ?: -1L
+                        if (head == frozenHead) {
+                            frozenPolls++
+                            if (frozenPolls >= DEAD_HEAD_POLLS) {
+                                LogStore.error(
+                                    "${config.logPrefix}: head frozen at $head while bank full " +
+                                        "(banked %.1fs) for ${DEAD_HEAD_POLLS / 10}s — audio sink is dead; ending session"
+                                            .format(bankedSeconds())
+                                )
+                                BeepPlayer.softError()
+                                main {
+                                    if (g == generation && running.get()) {
+                                        state = SpeechState.IDLE
+                                        running.set(false)
+                                    }
+                                }
+                                return@execute
+                            }
+                        } else {
+                            frozenHead = head
+                            frozenPolls = 0
+                        }
+                    }
+                    holdPolls++
+                    try { Thread.sleep(50) } catch (_: InterruptedException) { return@execute }
+                }
                 if (!running.get() || g != generation) return@execute
                 // A pause must also pause GENERATION — otherwise the queue
                 // keeps synthesizing ahead and, worse, schedule() would stomp
@@ -255,6 +370,7 @@ class StreamingPlaybackCore(
                     }
                     return@execute
                 }
+                bridgeIfDry(index, g)
                 val renderStartedAt = System.nanoTime()
                 val samples = runCatching { generateChunk(chunk.text) }
                     .onFailure { LogStore.error("${config.logPrefix}: chunk $index failed: ${it.message}") }
@@ -265,7 +381,7 @@ class StreamingPlaybackCore(
                 val wallSeconds = (System.nanoTime() - renderStartedAt) / 1_000_000_000.0
                 lastChunkRenderSeconds = lastChunkRenderSeconds * 0.3 + wallSeconds * 0.7
                 if (samples == null) BeepPlayer.softError()
-                schedule(index, samples, g, gate)
+                schedule(index, samples, g)
             }
             main {
                 if (g == generation && state == SpeechState.GENERATING) {
@@ -281,9 +397,8 @@ class StreamingPlaybackCore(
      *  generateQueue (called straight from the speak loop): the non-blocking
      *  retry sleeps below are producer-side pacing and must never sit on the
      *  main thread. Only progress/state notifications hop back to main. */
-    private fun schedule(index: Int, samples: FloatArray?, generationId: Int, gate: Semaphore) {
+    private fun schedule(index: Int, samples: FloatArray?, generationId: Int) {
         if (generationId != generation || !running.get()) {
-            gate.release()
             return
         }
         if (samples == null || samples.isEmpty()) {
@@ -293,7 +408,6 @@ class StreamingPlaybackCore(
             charsDone = indexOf(index + 1)
             val p = charsDone.toDouble() / totalChars
             main { if (generationId == generation) onProgress?.invoke(p) }
-            gate.release()
             return
         }
         // Schedule metrics (single-writer: the generate queue). The first
@@ -313,8 +427,14 @@ class StreamingPlaybackCore(
         val track = ensureTrack(samples.size * 2)
         if (track == null) {
             LogStore.error("${config.logPrefix}: ensureTrack failed for chunk $index (${samples.size} samples)")
-            gate.release()
             return
+        }
+        if (bridgeIncidentSeconds > 0.0) {
+            LogStore.info(
+                "${config.logPrefix} keepalive bridge ended — real audio resumed after %.1fs of bridged silence"
+                    .format(bridgeIncidentSeconds)
+            )
+            bridgeIncidentSeconds = 0.0
         }
         val shorts = ShortArray(samples.size) { i ->
             val clamped = samples[i].coerceIn(-1f, 1f)
@@ -360,10 +480,9 @@ class StreamingPlaybackCore(
                 // already queued. Starting earlier loses the race whenever
                 // the next chunk renders slower than the bank plays — the
                 // underrun then disables the track at the AudioFlinger level.
-                val bankedSeconds = (totalFramesWritten - maxOf(0, track.playbackHeadPosition)) / sampleRateHz.toDouble()
                 val prebuffer = maxOf(1.2, lastChunkRenderSeconds + 1.0)
                 if (!trackStarted && !paused.get() &&
-                    (bankedSeconds >= prebuffer || index == chunks.size - 1)
+                    (bankedSeconds() >= prebuffer || index == chunks.size - 1)
                 ) {
                     trackStarted = true
                     runCatching { track.play() }
@@ -383,7 +502,6 @@ class StreamingPlaybackCore(
             // (track suspended) must not flip the UI's Pause button back to Pause.
             if (state != SpeechState.SPEAKING && !paused.get()) state = SpeechState.SPEAKING
         }
-        gate.release()
 
         // Natural completion: the final chunk's audio was scheduled last.
         // The handler polls the PLAYBACK HEAD, not the wall-clock duration —
@@ -424,6 +542,23 @@ class StreamingPlaybackCore(
                             LogStore.info("${config.logPrefix}: head stalled at $head/${finalFrames} (<300 ms tail) — ending session")
                             finish(); return
                         }
+                        // Dead-head guard (the never-started sibling of the
+                        // tail-stall guard): a track whose head has not moved
+                        // AT ALL for 15 s while it should be playing is
+                        // provably not consuming — the Waydroid container's
+                        // HAL does this every session (head frozen at 0, HAL
+                        // write blocked, BUFFER TIMEOUT) and the poll used to
+                        // spin forever until a manual stop. A live track at
+                        // 1× moves its head one second per second; 15 s of
+                        // zero movement is death, not slowness.
+                        if (stallPolls >= DEAD_HEAD_POLLS) {
+                            LogStore.error(
+                                "${config.logPrefix}: head frozen at $head/${finalFrames} for " +
+                                    "${DEAD_HEAD_POLLS / 10}s — audio sink is dead; ending session"
+                            )
+                            BeepPlayer.softError()
+                            finish(); return
+                        }
                         if (stallPolls == 10 || stallPolls % 50 == 0) {
                             LogStore.warn("${config.logPrefix}: completion head frozen at $head/${finalFrames} (poll $stallPolls)")
                         }
@@ -438,11 +573,104 @@ class StreamingPlaybackCore(
         }
     }
 
+    /**
+     * Arms the never-run-dry silence bridge if the real queue just ran dry:
+     * the playback head has consumed everything written while chunk
+     * [nextIndex] still awaits rendering. Runs on the generate queue, right
+     * before the chunk's synthesis — the one moment the single-writer
+     * producer can feed the track before it goes busy rendering. Pre-writes
+     * ONE keepalive of silence sized to outlast the expected render
+     * (RenderAheadBankPolicy.bridgeSilenceSeconds); if the render still
+     * outruns it, the NEXT admission sees a dry bank again and bridges
+     * again. Never loops unbounded: an incident over 120 s of bridged
+     * silence disables the bridge for the session with an error log — a
+     * synthesis that dry for that long is dead, and the start-stall
+     * watchdog (R6) ends the session rather than silence looping forever.
+     */
+    private fun bridgeIfDry(nextIndex: Int, generationId: Int) {
+        if (generationId != generation || !running.get() || paused.get()) return
+        val banked = bankedSeconds()
+        if (!RenderAheadBankPolicy.bridgeNeeded(
+                bankedSeconds = banked,
+                hasPendingChunk = nextIndex < chunks.size,
+                paused = paused.get(),
+                trackAttached = audioTrack != null,
+            )
+        ) {
+            return
+        }
+        if (bridgeDisabled) return
+        val track = audioTrack ?: return
+        val silenceSeconds = RenderAheadBankPolicy.bridgeSilenceSeconds(lastChunkRenderSeconds)
+        val frames = (silenceSeconds * sampleRateHz).toInt().coerceAtLeast(1)
+        if (bridgeIncidentSeconds == 0.0) {
+            LogStore.info(
+                "${config.logPrefix} keepalive bridge — real queue ran dry before chunk $nextIndex " +
+                    "of ${chunks.size}, banked %.1fs; pre-writing %.1fs of silence so the track never idles"
+                        .format(banked, silenceSeconds)
+            )
+        }
+        val silence = ShortArray(frames)
+        var offset = 0
+        while (offset < silence.size) {
+            val fit = track.write(silence, offset, silence.size - offset, android.media.AudioTrack.WRITE_NON_BLOCKING)
+            if (fit < 0) {
+                LogStore.error("${config.logPrefix}: bridge write failed ($fit)")
+                return
+            }
+            if (fit == 0) {
+                // Buffer full with a DRY bank cannot happen (the head is at
+                // the write point); treat it as a wedged track and bail —
+                // the completion poller's revival path owns that case.
+                return
+            }
+            offset += fit
+            totalFramesWritten += fit
+            bridgeIncidentSeconds += fit / sampleRateHz.toDouble()
+        }
+        if (bridgeIncidentSeconds > BRIDGE_CAP_SECONDS) {
+            bridgeDisabled = true
+            LogStore.error(
+                "${config.logPrefix}: keepalive bridge exceeded %.0fs this session — synthesis looks dead; disabling bridge (watchdog should end the session)"
+                    .format(BRIDGE_CAP_SECONDS)
+            )
+        }
+    }
+
+    /** Safety cap on one session's total bridged silence, in seconds. */
+    private val BRIDGE_CAP_SECONDS = 120.0
+
+    /**
+     * The R6a start-stall watchdog delay. Generous: a cold neural load is
+     * 2–3 s typical, tens of seconds on a wedged-slow device — 45 s means
+     * "nothing will ever come", not "slow".
+     */
+    private val START_STALL_SECONDS = 45_000L
+
+    /** Completion-poll ticks (100 ms) before a fully frozen head ends the session. */
+    private val DEAD_HEAD_POLLS = 150
+
     /** Head position at the previous completion poll — stall detection. */
     private var lastPolledHead = 0L
 
     /** Consecutive polls with a frozen head while the track should be playing. */
     private var stallPolls = 0
+
+    /**
+     * Audio seconds generated-but-unplayed right now — the bank depth the
+     * render-ahead policy paces on (RenderAheadBankPolicy.bankedSeconds).
+     * Runs on the generate queue; the write counter is single-writer (this
+     * thread), the playback head advances on the audio thread by design.
+     */
+    private fun bankedSeconds(): Double {
+        val track = audioTrack ?: return 0.0
+        val head = runCatching { track.playbackHeadPosition.toLong() }.getOrDefault(0L)
+        return RenderAheadBankPolicy.bankedSeconds(
+            framesWritten = (totalFramesWritten - trackBaseFrames).toLong(),
+            playbackHead = head,
+            sampleRateHz = sampleRateHz,
+        )
+    }
 
     /**
      * Writes an unwritten tail back into the pipeline when the non-blocking
@@ -509,6 +737,9 @@ class StreamingPlaybackCore(
             // are buffered, not sounded.
             audioTrack = track
             trackAttached = true
+            // The fresh track's head starts at 0 — rebase the bank accounting
+            // onto it (see trackBaseFrames).
+            trackBaseFrames = totalFramesWritten
             track
         } catch (e: Exception) {
             LogStore.error("${config.logPrefix}: AudioTrack setup failed: ${e.message}")

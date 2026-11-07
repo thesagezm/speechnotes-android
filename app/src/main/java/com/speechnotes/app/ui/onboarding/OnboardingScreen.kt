@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.WavingHand
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -36,24 +37,31 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
 /**
- * First-launch onboarding: three pages (welcome → voices → get started).
- * Ported from OnboardingView.swift (speechnotes-ios). System back walks the
- * pager backwards instead of leaving the app, so the tour can never strand
- * the user outside it; Skip and Get started both complete it.
+ * First-launch onboarding: four pages (welcome → voices → notes → pomodoro
+ * & stats). Ported from OnboardingView.swift (speechnotes-ios); the
+ * Pomodoro & Stats closing page is iOS v1.8.0 parity (commit e07841f).
+ * System back walks the pager backwards instead of leaving the app, so the
+ * tour can never strand the user outside it; Skip and Get started both
+ * complete it.
  */
 private data class OnboardingPage(
     val title: String,
     val body: String,
     val icon: ImageVector,
+    /** iOS-style feature rows (emoji, headline, subcopy) for the closing
+     *  Pomodoro & Stats page; empty for the simple title/body pages. */
+    val features: List<Triple<String, String, String>> = emptyList(),
 )
 
 private val onboardingPages = listOf(
     OnboardingPage(
         title = "Speechnotes",
-        body = "Write it, then hear it read aloud — completely offline.",
+        body = "Write it, then hear it read aloud — completely offline. " +
+            "Tap + to write your first note, or import a book and read along.",
         icon = Icons.Filled.WavingHand,
     ),
     OnboardingPage(
@@ -68,6 +76,28 @@ private val onboardingPages = listOf(
         body = "Tap + to write your first note, or import a text, markdown, EPUB or PDF file. " +
             "Press play and follow along sentence by sentence.",
         icon = Icons.Filled.AutoAwesome,
+    ),
+    OnboardingPage(
+        title = "Focus, and see it add up",
+        body = "",
+        icon = Icons.Filled.Schedule,
+        features = listOf(
+            Triple(
+                "⏱️",
+                "Pomodoro on the Stats tab",
+                "Structured work/break cycles, Flowmodoro (bank break minutes as you focus), or a free timer",
+            ),
+            Triple(
+                "📊",
+                "Every listening minute lands in Stats",
+                "Streaks, goals and per-book time",
+            ),
+            Triple(
+                "🔔",
+                "A gentle banner keeps a running session present",
+                "While you read or listen",
+            ),
+        ),
     ),
 )
 
@@ -127,13 +157,42 @@ fun OnboardingScreen(onDone: () -> Unit) {
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
                 )
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    item.body,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
+                if (item.features.isEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        item.body,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                } else {
+                    Spacer(Modifier.height(20.dp))
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                        horizontalAlignment = Alignment.Start,
+                    ) {
+                        item.features.forEach { (icon, headline, sub) ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Text(icon, fontSize = 18.sp)
+                                Column {
+                                    Text(
+                                        headline,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        sub,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

@@ -39,6 +39,11 @@ remaining Waydroid verification items are listed under Pending Queue.
      bundled ML Kit (pre-approved by the user; already declared 16.0.1).
    Unit mapping is under In Flight. Coordination rules live in
    `ANDROID-REVIEW.md` (build/device locks, claim protocol, read-only git).
+   **STATUS 2026-11-07:** all three members' code is IN and verified by
+   Albus (225/225 green, APK installed + launched clean, 4 tabs on device).
+   Still open: Ron's lazy-engine-init P0 + the missing device evidence,
+   Hermione's M5 (settings audit + security pass + trim), Harry's verify
+   remainder and three `!!` to clear. See Pending Queue.
 1. **"start analysing ways to make the tts much much faster… iOS set maximum
    tokens from the previous generation seconds — completely increased the
    speed of generation and prevented stopping of tts"** — ADDRESSED: the
@@ -77,28 +82,66 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
-- **2026-10-31 — PACK WAVE (three agents in parallel, coordinated via
-  `ANDROID-REVIEW.md`):**
-  - **Harry:** H1 editor preview lock-in (P0-1) → H2 Stats as 4th tab →
-    H3 minimize playback bar (draggable bubble, iOS GlobalMiniPlayerOverlay)
-    → H4 landscape PlaybackRail + minimize (iOS PlaybackRail.swift) →
-    H5 pomodoro to v1.8.x standard (PomodoroEngine/Store/Views port,
-    onboarding page, juice bubbles, flowmodoro, keep-screen-on) →
-    H6 P2 bug sweep (empty-all confirm, True Black label, scope-empty state,
-    ±15 s glyphs, adaptive books grid).
-  - **Hermione:** M1 JEX round-trip (P0-3, image hash bug) + v1.8.x JEX
-    parity → M2 BookDrop v1.8.1 port (dbc0677 transfer fix + byte progress
-    both ways + NEW sender P1-3 + P0-6 allowlist) → M3 save/send without
-    file picker → M4 MathNotation/MathCommands port + preview rendering +
-    TTS word forms → M5 settings audit + security pass (tar path traversal,
-    FileProvider scope, WebView bridge, backup exposure) + trim.
-  - **Ron:** R1 0b seconds-based render-ahead bank (P0-7) → R2 0c never-run-dry
-    silence bridge → R3 playFrom primitive + select word/paragraph start
-    (notes + books, P0-2) → R4 OCR into notes via ML Kit → R5 PDF
-    native+OCR merge + force-OCR toggle + badges (P1-7) → R6 TTS polish
-    (start-stall watchdog, Kokoro-small network download, lock-screen skips).
-  - Environment at dispatch: Waydroid RUNNING + adb authorized; disk 57%;
-    115/115 tests green baseline.
+- **2026-11-07 — PACK WAVE: CODE COMPLETE, INTEGRATION IN PROGRESS.**
+  All three members closed their sessions and handed over (their logs are in
+  `ANDROID-REVIEW.md`). **Albus verification:** 225/225 JVM tests green
+  (forced `--rerun-tasks`), x86_64 APK built (89 MB), installed on Waydroid
+  via the push+`pm install` route, app launches clean (no crash/OOM lines),
+  4-tab nav confirmed on device (Notes/Books/Stats/Settings).
+  - **Harry (code-complete):** H1 editor Edit/Preview toggle (P0-1 fixed) ·
+    H2 Stats as the 4th tab + redesigned stats UI (moved out of Settings) ·
+    H3 minimized player = draggable, edge-snapping bubble persisting the
+    iOS `miniBubbleX`/`miniBubbleY` keys · H4 landscape PlaybackRail
+    (iOS PlaybackRail.swift, 150dp trailing panel, collapse to a 66dp
+    capsule, pref `landscapeRailMinimized`) on all four reading surfaces,
+    incl. the audio-reader anchoring bug he caught in device verify · H5
+    pomodoro at the v1.8.x standard (logic/PomodoroEngine.kt + 19 ported
+    tests, data/PomodoroStore.kt, ui/stats/PomodoroViews.kt with juice
+    bubbles + flowmodoro claim gate, onboarding page, keep-screen-on via
+    logic/ScreenAwakePolicy.kt) · H6 P2 sweep (empty-all confirm, True
+    Black label + `trueBlack` mapping, scope-empty state, shared
+    SkipSecondsIcon "15" glyphs, adaptive books grid).
+  - **Hermione (code-complete except M5):** M1 JEX round-trip (P0-3:
+    FNV→SHA-256 hash, v1.8.1 Joplin-canonical tar layout, tar/zip traversal
+    guards — committed dd20c7d) · M2 BookDrop v1.8.1 port (receiver byte
+    progress + connection-died marker, NEW data/LocalSendSender.kt on
+    OkHttp, BookDropSendSheet, note/book "Send with BookDrop", P0-6
+    landable-only allowlist) + two real device-found bugs fixed (signed
+    subnet bytes; upload dropped the session before the importer could
+    land it) · M3 save/send without a file picker (no SAF pickers exist;
+    editor exports now `<safe title>.md/.txt`, .jex named via
+    JexExport.fileName(scopeSuffix), Storage lists ALL exports and
+    clear-temp no longer deletes user files) · M4 symbols + math
+    (logic/MathNotation.kt, 25 ported tests, display+spoken walks wired
+    into MarkdownText/SpeechText, preview renders display glyphs) ·
+    **M5 NOT STARTED** (settings audit + security pass + trim).
+  - **Ron (code-complete, device evidence partial):** R1 seconds-based
+    render-ahead bank (P0-7, semaphore deleted) · R2 never-run-dry keepalive
+    bridge (iOS 241888e, one pre-write divergence recorded) · R3
+    `playFrom`/`playFromCurrent` + read-along tap-a-paragraph + editor
+    speak-from-caret + narrate-from-viewed-spot (P0-2) · R4 ML Kit OCR
+    into notes + PDF native/OCR merge (logic/PdfOcrMerge.kt) · R5
+    forceOCR/pdfIsScanned + Force-OCR toggle + shelf badges (P1-7) · R6
+    start-stall watchdog, Kokoro-small 92 MB download verified end-to-end,
+    lock-screen ±15 s, export stops playback first, dead-head guards.
+  - **Albus decisions recorded (2026-11-07):**
+    (1) Storage export list + protected exports are RATIFIED as landed.
+    (2) `android:usesCleartextTraffic="true"` is NOT accepted as a final
+    answer — the sender moves to raw sockets (the receiver already does) so
+    the app keeps the platform default-deny; if that is unsafe, the flag
+    stays ONLY with a recorded tradeoff + an HTTPS audit of every other
+    network path. (3) Platform backup must not carry the app's private data
+    (vault keys are device-bound, so a restored backup yields undecryptable
+    notes; with the vault off it carries plaintext notes) — exclude filesDir
+    via backup rules; Settings → Backup (.jex) stays the sanctioned path.
+    (4) The eager neural-model load is a P0 PERFORMANCE bug and lands next
+    (see Pending Queue). (5) Pack members do NOT commit — Albus commits.
+  - **Deviation recorded:** the wave lands as ONE checkpoint commit, not one
+    commit per unit — three agents' work is interleaved inside eight shared
+    files (ViewModel, NoteEditor, BookReader, BooksScreen, NotesList,
+    Persistence, SpeechText/MarkdownText), and hunk-splitting that history
+    would risk corrupting the record for no benefit. Per-unit commits resume
+    for the follow-up wave.
 - **Unit 0a (seconds-based ChunkSchedule) COMPLETE + verified on Waydroid** —
   see Completed Units.
 - **Waydroid audio caveat this boot (2026-10-24 ~23:52)**: playback reached
@@ -124,8 +167,40 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Pending Queue
 
-> 2026-10-31: items 0, 3, 4 and parts of 1 are assigned to the pack wave —
-> see In Flight for the agent mapping; progress lands there first, then here.
+> 2026-11-07: the pack wave's code is in (see In Flight). What
+> is left is the follow-up wave, assigned by Albus:
+>
+> 1. **R7 — LAZY ENGINE INIT (P0 PERFORMANCE, Harry's escalation).** The
+>    neural model is loaded EAGERLY on every app start: `SpeechPlayer` is
+>    built inside the ViewModel and `rebuildEngine()` calls
+>    `activeEngine?.prewarm()` on every rebuild → logcat shows
+>    "KokoroEngine: 115 vocab entries, 28 voices ready in 2191 ms" before
+>    the user asked for speech, app RSS 428–466 MB with Kokoro-small vs
+>    218–270 MB on the system engine, debug cold start +3.38 s vs +2.07 s,
+>    and the host LMK killed the app 3× in ~90 min. Fix: construct/load the
+>    ONNX session only on a real speak/prewarm request; no model load at
+>    startup; keep the 5-minute idle unload; verify RSS + cold start on
+>    Waydroid. Owner: Ron (speech/ + the ViewModel hooks).
+> 2. **M5 — SETTINGS AUDIT + SECURITY PASS + TRIM (Hermione).** Every
+>    settings row end-to-end on Waydroid (Stats excluded — shipped);
+>    cleartext-traffic decision (In Flight, decision 2); platform-backup
+>    exclusion (decision 3); FileProvider scope; AndroidReaderBridge
+>    command allowlist; MainActivity VIEW/SEND name sanitisation; model
+>    downloads HTTPS; remove the unused datastore-preferences dependency
+>    and the dead `showOverflow` state; list speech/ dead code for Ron.
+> 3. **DEVICE EVIDENCE still missing (Ron):** multi-chunk bank-hold /
+>    keepalive-bridge log lines, R3 playFrom log, R4 OCR import run,
+>    R5 Force-OCR toggle + shelf badges, R6e artifact hunt.
+> 4. **VERIFY REMAINDER (Harry):** pomodoro Stop-confirm dialog, the
+>    Flowmodoro claim gate staying disabled below 3 banked break minutes,
+>    the two H6 items (empty-bin confirm, scope-empty state) and the
+>    portrait mini-bar ±15 s glyphs — re-run AFTER R7 lands (one rebuild
+>    makes the whole 4-surface rail matrix cheap to re-verify).
+> 5. **RULE VIOLATIONS to clear (Harry):** three `!!` remain in the new code
+>    (logic/PomodoroEngine.kt ×2, ui/stats/PomodoroViews.kt ×1) —
+>    AGENTS.md forbids them; use requireNotNull/safe access.
+> 6. Items 0, 3, 4 and parts of 1 below are now covered by the wave above;
+>    they stay here only for their leftovers.
 
 0. **TTS generation speed (user feedback):**
    - **0a — seconds-based ChunkSchedule: SHIPPED + Waydroid-verified**
@@ -215,6 +290,16 @@ commit, `git push` after verify, and NO machine identifiers in any file.
   host for interop vectors.
 
 ## Completed Units
+
+- **2026-11-07 — PACK WAVE checkpoint (Harry H1–H6 · Hermione M1–M4 ·
+  Ron R1–R6).** Code-complete: 225/225 JVM tests green (forced rerun),
+  x86_64 APK built (89 MB), installed on Waydroid (push + `pm install` —
+  streaming `adb install` is unreliable on this boot), launched clean, 4-tab
+  nav confirmed on device. Hermione's M1 shipped separately in dd20c7d; the
+  rest lands as ONE checkpoint commit because three members' work is
+  interleaved inside eight shared files. Unit-by-unit detail, the agents'
+  own logs (in `ANDROID-REVIEW.md`) and Albus's five decisions are under
+  In Flight. Follow-up wave assigned under Pending Queue.
 
 - **2026-10-25 — Unit 0a: the seconds-based ChunkSchedule (iOS `afdc1d1` +
   `e680114` port).**

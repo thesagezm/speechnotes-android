@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Book
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Note
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -47,8 +48,8 @@ import com.speechnotes.app.ui.settings.SettingsHomeScreen
 import com.speechnotes.app.ui.theme.SpeechnotesTheme
 
 /**
- * Root navigation: three tabs (Notes / Books / Settings) with the editor,
- * recycle bin and notebooks as pushed destinations, exactly mirroring the
+ * Root navigation: four tabs (Notes / Books / Stats / Settings) with the
+ * editor, recycle bin and notebooks as pushed destinations, mirroring the
  * iOS app's TabView + NavigationStack structure.
  */
 @Composable
@@ -70,6 +71,7 @@ fun SpeechnotesApp(intakeFlow: StateFlow<MainActivity.Intake?> = MainActivity.in
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     NOTES("notes", "Notes", Icons.Default.Note),
     BOOKS("books", "Books", Icons.Default.Book),
+    STATS("stats", "Stats", Icons.Default.Insights),
     SETTINGS("settings", "Settings", Icons.Default.Settings),
 }
 
@@ -159,6 +161,9 @@ private fun AppNavHost(
                         onOpenLogs = { navController.navigate("logs") },
                     )
                 }
+                composable(Tab.STATS.route) {
+                    com.speechnotes.app.ui.stats.StatsTabScreen(vm = vm)
+                }
                 // Settings subpages (Unit 3): one route per area so each
                 // page's state collection and pollers only run while shown.
                 composable("settings/speech") {
@@ -169,9 +174,6 @@ private fun AppNavHost(
                 }
                 composable("settings/appearance") {
                     com.speechnotes.app.ui.settings.AppearanceSettingsScreen(vm = vm, onBack = { navController.popBackStack() })
-                }
-                composable("settings/stats") {
-                    com.speechnotes.app.ui.settings.StatsScreen(vm = vm, onBack = { navController.popBackStack() })
                 }
                 composable("settings/bookdrop") {
                     com.speechnotes.app.ui.settings.BookDropSettingsScreen(onBack = { navController.popBackStack() })
@@ -245,6 +247,14 @@ private fun AppNavHost(
                     .imePadding(),
             )
         }
+
+        // The Pomodoro gentle banner floats under the status bar, across
+        // every tab, and owns the app-wide one-second tick (iOS
+        // pomodoroBanner() root modifier parity).
+        com.speechnotes.app.ui.stats.PomodoroBannerOverlay()
+        // Keep Screen On: the single writer of View.keepScreenOn (iOS
+        // ScreenAwake holder parity) — readers register, this applies.
+        com.speechnotes.app.ui.playback.KeepScreenOnEffect()
     }
 }
 

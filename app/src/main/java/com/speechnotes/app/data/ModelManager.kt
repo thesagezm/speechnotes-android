@@ -241,7 +241,7 @@ class ModelManager(private val context: Context) {
 
     // MARK: - Joplin .jex export + share
 
-    fun exportJex(notes: List<Note>, notebooks: List<Notebook>): File? {
+    fun exportJex(notes: List<Note>, notebooks: List<Notebook>, scopeSuffix: String = ""): File? {
         val payloads = com.speechnotes.app.logic.JexExport.buildArchive(
             notes = notes.filter { it.deletedAt == null }.map { note ->
                 com.speechnotes.app.logic.JexExport.NotePayload(
@@ -265,7 +265,7 @@ class ModelManager(private val context: Context) {
                 )
             },
         )
-        val out = File(AppFiles.exportsDir, "speechnotes-backup.jex")
+        val out = File(AppFiles.exportsDir, com.speechnotes.app.logic.JexExport.fileName(scopeSuffix))
         return runCatching {
             out.parentFile?.mkdirs()
             out.writeBytes(payloads)

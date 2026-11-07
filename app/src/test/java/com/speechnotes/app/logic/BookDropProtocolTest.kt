@@ -1,6 +1,7 @@
 package com.speechnotes.app.logic
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -129,9 +130,47 @@ class BookDropProtocolTest {
             "o" to "slides.odp",
             "p" to "deck.pptx",
             "t" to "notes.odt",
-            "s" to "book.opus",
+            "s" to "book.m4b",
         )
         assertEquals(setOf("d", "o", "p", "t", "s"), response.files.keys)
+    }
+
+    @Test
+    fun prepare_upload_rejects_formats_the_importer_cannot_land() {
+        val c = core()
+        val filesJson = listOf(
+            "m" to "story.mobi",
+            "r" to "doc.rtf",
+            "x" to "page.html",
+            "k" to "book.kindle",
+        ).joinToString(",") { (id, name) ->
+            "\"$id\":{\"id\":\"$id\",\"fileName\":\"$name\",\"size\":5,\"sha256\":null}"
+        }
+        val body = """{"info":{"alias":"PC","version":"2.2","fingerprint":"p","port":1,"protocol":"http"},"pin":null,"files":{$filesJson}}"""
+        val response = c.prepareUpload(body, senderHost = "192.168.1.9")
+        assertEquals("no acceptable file means the whole request is refused", 403, response.status)
+    }
+
+    @Test
+    fun prepare_upload_accepts_a_note_and_a_recording_beside_an_unlandable_file() {
+        // iOS v1.8.1 routing parity: a markdown note and a WAV are landable
+        // on Android now, so a mixed request is a PARTIAL accept — the
+        // unlandable file is dropped, the other two get their tokens.
+        val c = core()
+        val filesJson = listOf(
+            "n" to "note.md",
+            "w" to "recording.wav",
+            "m" to "story.mobi",
+        ).joinToString(",") { (id, name) ->
+            "\"$id\":{\"id\":\"$id\",\"fileName\":\"$name\",\"size\":5,\"sha256\":null}"
+        }
+        val body = """{"info":{"alias":"PC","version":"2.2","fingerprint":"p","port":1,"protocol":"http"},"pin":null,"files":{$filesJson}}"""
+        val response = c.prepareUpload(body, senderHost = "192.168.1.9")
+        assertEquals(200, response.status)
+        val prepared = BookDropCore.json.decodeFromString(LocalSendPrepareResponse.serializer(), String(response.body))
+        assertTrue("the note is accepted", prepared.files.containsKey("n"))
+        assertTrue("the recording is accepted", prepared.files.containsKey("w"))
+        assertFalse("the unlandable file is refused", prepared.files.containsKey("m"))
     }
 
     // MARK: - upload
@@ -188,11 +227,15 @@ class BookDropProtocolTest {
         val p = prepare(c, "a" to "book.epub", sha256 = true)
         val response = uploadMemory(c, p, "a", "hello".toByteArray())
         assertEquals(200, response.status)
-        val landed = c.landedFiles(p.sessionId)
-        // The session completed on the last file, so landedFiles drains — the
-        // router consumed the list BEFORE completion in the receiver flow.
-        assertTrue(landed.isEmpty() || landed.size == 1)
-        // A completed session frees the receiver for the next prepare.
+        // The completed session stays queryable until the receiver DRAINS it
+        // off the upload response (removing the session at completion was the
+        // bug that silently dropped single-file transfers).
+        assertEquals(1, c.landedFiles(p.sessionId).size)
+        val drained = c.collectCompleted(p.sessionId)
+        assertEquals(1, drained.size)
+        assertEquals("book.epub", drained[0].fileName)
+        // The drain is one-shot, and a drained session frees the receiver.
+        assertTrue(c.collectCompleted(p.sessionId).isEmpty())
         val next = prepare(c, "b" to "book2.epub")
         assertTrue(next.files.containsKey("b"))
     }
@@ -259,15 +302,26 @@ class BookDropProtocolTest {
     }
 
     @Test
-    fun accepted_extensions_match_ios_union() {
-        for (ext in listOf("epub", "pdf", "m4b", "m4a", "mp4", "mp3", "jex", "opus", "ogg", "oga")) {
+    fun accepted_extensions_are_the_landable_set() {
+        // Everything the router has a landing path for — and nothing it
+        // would accept and then fail to import.
+        //
+        // iOS v1.8.1 routing parity added three families back: a WAV lands
+        // in Exports, and markdown/plain text lands as a NOTE (the book
+        // importer would flatten it to a one-chapter EPUB).
+        for (ext in listOf(
+            "epub", "pdf", "m4b", "m4a", "mp4", "mp3", "jex",
+            "docx", "odt", "pptx", "odp",
+            "wav",
+            "md", "markdown", "txt", "text",
+        )) {
             assertTrue(ext, BookDropCore.acceptedExtensions.contains(ext))
         }
-        for (ext in DocumentBook.supportedExtensions) {
-            assertTrue(ext, BookDropCore.acceptedExtensions.contains(ext))
+        // No importer on Android for these — refused at prepare-upload
+        // instead of accepted and then failing to import.
+        for (ext in setOf("mobi", "azw3", "fb2", "rtf", "html", "opus", "ogg", "oga")) {
+            assertTrue("$ext has no importer on Android", !BookDropCore.acceptedExtensions.contains(ext))
         }
         assertTrue(!BookDropCore.acceptedExtensions.contains("exe"))
-        // Case-insensitive: uppercase names pass the filter too.
-        assertTrue(BookDropCore.acceptedExtensions.contains("EPUB".lowercase()))
     }
 }

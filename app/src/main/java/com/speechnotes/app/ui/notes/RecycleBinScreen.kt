@@ -46,6 +46,8 @@ import com.speechnotes.app.model.Note
 @Composable
 fun RecycleBinScreen(vm: SpeechnotesViewModel, onBack: () -> Unit) {
     val deleted by vm.notes.deletedNotes.collectAsState()
+    // Empty-all is unrecoverable — it must not fire from a single tap.
+    var showEmptyConfirm by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -58,7 +60,7 @@ fun RecycleBinScreen(vm: SpeechnotesViewModel, onBack: () -> Unit) {
                 },
                 actions = {
                     if (deleted.isNotEmpty()) {
-                        IconButton(onClick = { vm.notes.emptyRecycleBin() }) {
+                        IconButton(onClick = { showEmptyConfirm = true }) {
                             Icon(Icons.Default.Delete, contentDescription = "Empty")
                         }
                     }
@@ -108,6 +110,23 @@ fun RecycleBinScreen(vm: SpeechnotesViewModel, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (showEmptyConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showEmptyConfirm = false },
+            title = { Text("Empty Recently Deleted?") },
+            text = { Text("All ${deleted.size} note(s) will be permanently deleted. This cannot be undone.") },
+            confirmButton = {
+                Button(onClick = {
+                    vm.notes.emptyRecycleBin()
+                    showEmptyConfirm = false
+                }) { Text("Empty") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEmptyConfirm = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

@@ -148,4 +148,152 @@ class RenderAheadBankPolicyTest {
         assertFalse(RenderAheadBankPolicy.isExhausted(0.5))
         assertFalse(RenderAheadBankPolicy.isExhausted(10.0))
     }
+
+    // MARK: - Live bank accounting (R1: the seconds-based render-ahead bank)
+
+    @Test
+    fun bankedSeconds_isFramesAheadOfHeadOverRate() {
+        // 48_000 frames written, 24_000 played, 24 kHz → exactly 1 s banked.
+        assertEquals(
+            1.0,
+            RenderAheadBankPolicy.bankedSeconds(
+                framesWritten = 48_000, playbackHead = 24_000, sampleRateHz = 24_000,
+            ),
+            1e-9,
+        )
+    }
+
+    @Test
+    fun bankedSeconds_drainsAsTheHeadAdvances() {
+        // The producer's hold releases when playback consumes the bank: the
+        // same write count with a caught-up head reads as empty.
+        assertEquals(
+            0.0,
+            RenderAheadBankPolicy.bankedSeconds(
+                framesWritten = 48_000, playbackHead = 48_000, sampleRateHz = 24_000,
+            ),
+            0.0,
+        )
+    }
+
+    @Test
+    fun bankedSeconds_clampsHeadAheadOfWritesToZero() {
+        // Cannot happen on a live track, but the two reads race — a negative
+        // depth must never read as a drained bank AND admit… or worse, as a
+        // negative hold. Clamp to 0 (an empty bank admits the next chunk).
+        assertEquals(
+            0.0,
+            RenderAheadBankPolicy.bankedSeconds(
+                framesWritten = 1_000, playbackHead = 2_000, sampleRateHz = 24_000,
+            ),
+            0.0,
+        )
+    }
+
+    @Test
+    fun bankedSeconds_nonPositiveSampleRate_reportsEmptyBank() {
+        // A zero rate cannot convert frames to seconds; refusing to admit
+        // forever would be a worse failure than an unguarded bank.
+        assertEquals(
+            0.0,
+            RenderAheadBankPolicy.bankedSeconds(
+                framesWritten = 48_000, playbackHead = 0, sampleRateHz = 0,
+            ),
+            0.0,
+        )
+        assertEquals(
+            0.0,
+            RenderAheadBankPolicy.bankedSeconds(
+                framesWritten = 48_000, playbackHead = 0, sampleRateHz = -1,
+            ),
+            0.0,
+        )
+    }
+
+    @Test
+    fun bankedSeconds_feedsAllows_admittingOnAnyDrain() {
+        // The wiring the producer runs: hold while the banked reading blocks
+        // admission, admit the moment it drains below target — even when the
+        // target is below one chunk's audio length (critical thermal).
+        val target = RenderAheadBankPolicy.pressuredTargetSeconds(
+            RenderAheadBankPolicy.ThermalPressure.CRITICAL, 24_000.0,
+        )
+        assertEquals(2.0, target, 0.01) // 8 s × 0.25 pressure factor
+        val banked = RenderAheadBankPolicy.bankedSeconds(
+            framesWritten = 72_000, playbackHead = 24_000, sampleRateHz = 24_000,
+        )
+        assertEquals(2.0, banked, 1e-9)
+        assertFalse(RenderAheadBankPolicy.allows(banked, target))
+        assertTrue(
+            RenderAheadBankPolicy.allows(
+                RenderAheadBankPolicy.bankedSeconds(
+                    framesWritten = 72_000, playbackHead = 48_001, sampleRateHz = 24_000,
+                ),
+                target,
+            ),
+        )
+    }
+
+    // MARK: - Never-run-dry silence bridge (R2, iOS 241888e)
+
+    @Test
+    fun bridgeNeeded_armsOnlyWhenDryPendingPlayingAndAttached() {
+        // The exact dry spell the bridge exists for: the head consumed
+        // everything written, the next chunk is still to render, the user
+        // has not paused, and a track exists to keep fed.
+        assertTrue(
+            RenderAheadBankPolicy.bridgeNeeded(
+                bankedSeconds = 0.0, hasPendingChunk = true, paused = false, trackAttached = true,
+            )
+        )
+    }
+
+    @Test
+    fun bridgeNeeded_staysInertWhenTheBankStillHoldsAudio() {
+        // Real audio queued — AudioFlinger has something to play; bridging
+        // would pad the gap the listener has not reached yet.
+        assertFalse(
+            RenderAheadBankPolicy.bridgeNeeded(
+                bankedSeconds = 0.5, hasPendingChunk = true, paused = false, trackAttached = true,
+            )
+        )
+        assertFalse(
+            RenderAheadBankPolicy.bridgeNeeded(
+                bankedSeconds = 12.0, hasPendingChunk = true, paused = false, trackAttached = true,
+            )
+        )
+    }
+
+    @Test
+    fun bridgeNeeded_staysInertWithoutATrackOrWhenPausedOrWhenNothingPending() {
+        // No track yet (the first chunk of a session — nothing to keep fed).
+        assertFalse(
+            RenderAheadBankPolicy.bridgeNeeded(
+                bankedSeconds = 0.0, hasPendingChunk = true, paused = false, trackAttached = false,
+            )
+        )
+        // Paused: the user asked for silence.
+        assertFalse(
+            RenderAheadBankPolicy.bridgeNeeded(
+                bankedSeconds = 0.0, hasPendingChunk = true, paused = true, trackAttached = true,
+            )
+        )
+        // Nothing pending: the completion poller owns the tail.
+        assertFalse(
+            RenderAheadBankPolicy.bridgeNeeded(
+                bankedSeconds = 0.0, hasPendingChunk = false, paused = false, trackAttached = true,
+            )
+        )
+    }
+
+    @Test
+    fun bridgeSilence_coversTheExpectedRender() {
+        // No render history yet (first bridge of a session): the margin
+        // floor applies — one full second for the HAL to chew.
+        assertEquals(1.0, RenderAheadBankPolicy.bridgeSilenceSeconds(0.0), 0.0)
+        // After a 3.4 s render, the silence must outlast a repeat of it:
+        // render + margin, or the track drains mid-render and AudioFlinger
+        // disables it — the pathology the bridge exists to prevent.
+        assertEquals(4.4, RenderAheadBankPolicy.bridgeSilenceSeconds(3.4), 1e-9)
+    }
 }

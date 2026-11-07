@@ -155,6 +155,24 @@ object RenderAheadBankPolicy {
         bankedSeconds < targetSeconds
 
     /**
+     * Audio seconds generated-but-unplayed right now — the reading the
+     * producer paces on. Computed from the LIVE track: frames it has accepted
+     * minus frames the playback head has consumed, over the sample rate. Both
+     * counts are frame positions in the SAME track, so they cancel exactly.
+     *
+     * A non-positive sample rate reports an empty bank (the producer would
+     * hold forever otherwise, and generating ahead is the safer failure —
+     * same reasoning as [effectiveTargetSeconds]). A head ahead of the write
+     * position cannot happen on a live track but is clamped to 0 so a race
+     * between the two reads can never read as negative depth.
+     */
+    fun bankedSeconds(framesWritten: Long, playbackHead: Long, sampleRateHz: Int): Double {
+        if (sampleRateHz <= 0) return 0.0
+        val depth = (framesWritten - playbackHead).coerceAtLeast(0L)
+        return depth / sampleRateHz.toDouble()
+    }
+
+    /**
      * Bank depth below which the bank counts as exhausted (synthesis-bound
      * silence) rather than merely draining. Half a second: enough to absorb
      * ticker quantisation, small enough that a genuinely empty bank never
@@ -164,4 +182,37 @@ object RenderAheadBankPolicy {
 
     fun isExhausted(bankedSeconds: Double): Boolean =
         bankedSeconds < EXHAUSTION_THRESHOLD_SECONDS
+
+    /**
+     * Margin added to the last chunk's measured WALL render time when sizing
+     * the never-run-dry keepalive (the silence bridge, iOS 241888e): the
+     * silence must outlast the render that follows it, or the track drains
+     * mid-render and AudioFlinger disables it — the frozen-head-at-0
+     * pathology.
+     */
+    const val BRIDGE_MARGIN_SECONDS: Double = 1.0
+
+    /**
+     * Seconds of keepalive silence to pre-write before rendering the next
+     * chunk with a dry bank. At least the exhaustion threshold (something
+     * for the HAL to chew even with no render-time history — the first
+     * bridge of a session), otherwise the last chunk's measured render time
+     * plus the margin.
+     */
+    fun bridgeSilenceSeconds(lastChunkRenderSeconds: Double): Double =
+        maxOf(EXHAUSTION_THRESHOLD_SECONDS, lastChunkRenderSeconds + BRIDGE_MARGIN_SECONDS)
+
+    /**
+     * Whether the silence bridge should arm right now: the producer still
+     * has a chunk to render, a track exists to keep fed, the user has not
+     * asked for silence, and the bank is exhausted (the playback head has
+     * consumed everything written — the exact moment AudioFlinger can
+     * disable the track). Pure so the whole decision is assertable on the JVM.
+     */
+    fun bridgeNeeded(
+        bankedSeconds: Double,
+        hasPendingChunk: Boolean,
+        paused: Boolean,
+        trackAttached: Boolean,
+    ): Boolean = trackAttached && hasPendingChunk && !paused && isExhausted(bankedSeconds)
 }

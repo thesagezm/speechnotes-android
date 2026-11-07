@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -54,6 +55,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
@@ -152,9 +154,24 @@ fun BookReaderScreen(vm: SpeechnotesViewModel, bookId: String, onBack: () -> Uni
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (book.format) {
-                Book.FORMAT_EPUB -> EpubReader(vm, book)
-                Book.FORMAT_PDF -> PdfReader(vm, book)
-                else -> AudioReader(vm, book)
+                Book.FORMAT_EPUB -> {
+                    com.speechnotes.app.ui.playback.KeepScreenOnSurface(
+                        com.speechnotes.app.logic.ScreenAwakeSurface.EPUB_READER,
+                    )
+                    EpubReader(vm, book)
+                }
+                Book.FORMAT_PDF -> {
+                    com.speechnotes.app.ui.playback.KeepScreenOnSurface(
+                        com.speechnotes.app.logic.ScreenAwakeSurface.PDF_READER,
+                    )
+                    PdfReader(vm, book)
+                }
+                else -> {
+                    com.speechnotes.app.ui.playback.KeepScreenOnSurface(
+                        com.speechnotes.app.logic.ScreenAwakeSurface.AUDIOBOOK_READER,
+                    )
+                    AudioReader(vm, book)
+                }
             }
         }
     }
@@ -174,6 +191,15 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
     val appearance by vm.readerAppearance.collectAsState()
     var showToc by remember { mutableStateOf(false) }
     var showAppearance by remember { mutableStateOf(false) }
+    // Landscape moves the transport to the trailing rail (iOS PlaybackRail):
+    // the bottom bar keeps only reader chrome (contents/appearance/fonts).
+    val landscape = com.speechnotes.app.ui.playback.isLandscape()
+    val playProgress by vm.player.progress.collectAsState()
+    val playRate by vm.player.rateMultiplier.collectAsState()
+    val playState by vm.player.state.collectAsState()
+    val nowPlayingBookId by vm.player.nowPlayingBookId.collectAsState()
+    val narratingThis = nowPlayingBookId == book.id && playState.isActive
+    var showVoicePicker by remember { mutableStateOf(false) }
     // Fallback TOC (label + href) from epub.js, used only when the manifest
     // has no saved toc rows.
     var hrefToc by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
@@ -284,6 +310,7 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                     vm = vm,
                     book = book,
                     currentChapter = currentChapter,
+                    playControlsVisible = !landscape,
                     onShowToc = { showToc = true },
                     onShowAppearance = { showAppearance = true },
                     onFontDown = { vm.setReaderFontSize((appearance.fontSize - 10).coerceAtLeast(70)) },
@@ -292,7 +319,8 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
             }
         },
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
+        Row(Modifier.padding(padding).fillMaxSize()) {
+        Box(Modifier.weight(1f)) {
             // Keyed on the flow token: a flow switch drops the old WebView and
             // builds a fresh one whose URL carries the new flow, exactly like
             // iOS's .id(reloadToken) on BookWebView.
@@ -357,6 +385,32 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                 )
             }
         }
+        if (landscape) {
+            com.speechnotes.app.ui.playback.PlaybackRail(
+                vm = vm,
+                progress = playProgress,
+                isGenerating = playState == SpeechState.GENERATING,
+                isSpeaking = playState == SpeechState.SPEAKING,
+                isPlayEnabled = true,
+                onTogglePlay = {
+                    if (narratingThis) vm.player.toggle()
+                    else vm.toggleBookChapter(book, currentChapter, fraction = book.positionFraction)
+                },
+                onStop = if (narratingThis && playState != SpeechState.GENERATING) {
+                    { vm.player.stop() }
+                } else null,
+                voiceLabel = vm.player.currentVoiceDescription,
+                onChangeVoice = { showVoicePicker = true },
+                stepLabel = "Ch ${currentChapter + 1}${if (spineCount > 0) "/$spineCount" else ""}",
+                onStepBack = { goChapter(webViewRef, currentChapter - 1) },
+                onStepForward = { goChapter(webViewRef, currentChapter + 1) },
+                stepBackEnabled = currentChapter > 0,
+                stepForwardEnabled = spineCount <= 0 || currentChapter < spineCount - 1,
+                rate = playRate,
+                onRateChange = { vm.player.setRateMultiplier(it) },
+            )
+        }
+        }
 
         if (showToc) {
             ModalBottomSheet(onDismissRequest = { showToc = false }) {
@@ -380,6 +434,11 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                                     webViewRef.value?.evaluateJavascript(
                                         "window.readerGoChapter && window.readerGoChapter(${entry.chapterIndex});", null,
                                     )
+                                    // R3 (iOS 583acdb): a Contents jump during
+                                    // read-along MOVES the speech.
+                                    if (vm.isBookNarrating(book)) {
+                                        vm.narrateFromSpot(book, entry.chapterIndex)
+                                    }
                                 },
                             )
                         }
@@ -506,6 +565,7 @@ private fun EpubReaderBottomBar(
     vm: SpeechnotesViewModel,
     book: Book,
     currentChapter: Int,
+    playControlsVisible: Boolean,
     onShowToc: () -> Unit,
     onShowAppearance: () -> Unit,
     onFontDown: () -> Unit,
@@ -533,6 +593,7 @@ private fun EpubReaderBottomBar(
             }
             IconButton(onClick = onFontDown) { Text("A-", style = MaterialTheme.typography.titleSmall) }
             IconButton(onClick = onFontUp) { Text("A+", style = MaterialTheme.typography.titleSmall) }
+            if (playControlsVisible) {
             FilledIconButton(onClick = {
                 if (narratingThis) vm.player.toggle()
                 else vm.toggleBookChapter(book, currentChapter, fraction = book.positionFraction)
@@ -554,6 +615,7 @@ private fun EpubReaderBottomBar(
                 IconButton(onClick = { vm.player.stop() }) {
                     Icon(Icons.Default.Stop, contentDescription = "Stop narration")
                 }
+            }
             }
         }
     }
@@ -804,6 +866,12 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
     val playState by vm.player.state.collectAsState()
     val nowPlayingBookId by vm.player.nowPlayingBookId.collectAsState()
     val narratingThis = nowPlayingBookId == book.id && playState.isActive
+    // Landscape moves the transport to the trailing rail (iOS PlaybackRail);
+    // the bottom row keeps the page slider/stepper and reader chrome only.
+    val landscape = com.speechnotes.app.ui.playback.isLandscape()
+    val playProgress by vm.player.progress.collectAsState()
+    val playRate by vm.player.rateMultiplier.collectAsState()
+    var showVoicePickerPdf by remember { mutableStateOf(false) }
     val bitmaps = remember(book.id) { mutableStateMapOf<Int, android.graphics.Bitmap>() }
     // PDDocument.load OFF the main thread (P0-5): parsing a large or scanned
     // PDF can take seconds — this used to run inside remember{} synchronously,
@@ -931,7 +999,8 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
         !hidden
     }
 
-    Column(Modifier.fillMaxSize()) {
+    Row(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().weight(1f)) {
         Box(Modifier.weight(1f)) {
             val transformState = androidx.compose.foundation.gestures.TransformableState { zoomChange, panChange, _ ->
                 zoom = (zoom * zoomChange).coerceIn(1f, 4f)
@@ -1019,7 +1088,7 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
                 ) {
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next page")
                 }
-                FilledIconButton(onClick = {
+                if (!landscape) FilledIconButton(onClick = {
                     // Pause/resume the ongoing narration; start the chain for
                     // the chapter containing the CURRENT page — the text pick
                     // is pinned to that page (SpeechPlayer honors the offset),
@@ -1045,13 +1114,46 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
                 }
                 // The thin in-button spinner was near-invisible on device; the
                 // Stop glyph during GENERATING (tap = cancel) reads clearly.
-                if (narratingThis && playState != SpeechState.GENERATING) {
+                if (narratingThis && playState != SpeechState.GENERATING && !landscape) {
                     IconButton(onClick = { vm.player.stop() }) {
                         Icon(Icons.Default.Stop, contentDescription = "Stop narration")
                     }
                 }
             }
         }
+        }
+        if (landscape) {
+            com.speechnotes.app.ui.playback.PlaybackRail(
+                vm = vm,
+                progress = playProgress,
+                isGenerating = playState == SpeechState.GENERATING,
+                isSpeaking = playState == SpeechState.SPEAKING,
+                isPlayEnabled = true,
+                onTogglePlay = {
+                    if (narratingThis) vm.player.toggle()
+                    else {
+                        val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
+                        vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
+                    }
+                },
+                onStop = if (narratingThis && playState != SpeechState.GENERATING) {
+                    { vm.player.stop() }
+                } else null,
+                voiceLabel = vm.player.currentVoiceDescription,
+                onChangeVoice = { showVoicePickerPdf = true },
+                stepLabel = "Page ${pageIndex + 1}/$pageCount",
+                onStepBack = { if (pageIndex > 0) pageIndex-- },
+                onStepForward = { if (pageIndex < pageCount - 1) pageIndex++ },
+                stepBackEnabled = pageIndex > 0,
+                stepForwardEnabled = pageIndex < pageCount - 1,
+                rate = playRate,
+                onRateChange = { vm.player.setRateMultiplier(it) },
+            )
+        }
+        }
+
+    if (showVoicePickerPdf) {
+        com.speechnotes.app.ui.voice.VoicePickerSheet(vm = vm, onDismiss = { showVoicePickerPdf = false })
     }
 
     if (showOutline) {
@@ -1096,9 +1198,42 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
                             pageIndex = page
                             vm.saveBookPosition(book.id, page + 1, 0.0, null)
                             showOutline = false
+                            // R3 (iOS 583acdb): a Contents jump during
+                            // read-along MOVES the speech to the jumped-to
+                            // spot, not just the view.
+                            if (vm.isBookNarrating(book)) {
+                                val chapter = book.chapters.indexOfFirst { page in it.startPage..it.endPage }
+                                vm.narrateFromSpot(book, if (chapter >= 0) chapter else 0, page = page)
+                            }
                         },
                     )
                 }
+            }
+            // R5: the per-book Force-OCR toggle (iOS Book.forceOCR) lives in
+            // the PDF Contents sheet — the one surface where it is readable
+            // next to the page map it changes. Flipping it invalidates the
+            // cached chapter text (the VM owns that).
+            if (book.format == Book.FORMAT_PDF) {
+                HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                var forceOcr by remember(book.id) { mutableStateOf(book.forceOCR) }
+                ListItem(
+                    headlineContent = { Text("Force OCR") },
+                    supportingContent = {
+                        Text(
+                            if (book.pdfIsScanned) "Scanned — text is recognized from page images"
+                            else "Recognize every page, even where a text layer exists"
+                        )
+                    },
+                    trailingContent = {
+                        Switch(
+                            checked = forceOcr,
+                            onCheckedChange = {
+                                forceOcr = it
+                                vm.setBookForceOcr(book.id, it)
+                            },
+                        )
+                    },
+                )
             }
         }
     }
@@ -1135,7 +1270,11 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
 
     fun startPlayback(index: Int, offsetMs: Long) = audio.play(book, index, offsetMs)
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+    // Landscape: the rail carries the transport (iOS PlaybackRail).
+    val landscape = com.speechnotes.app.ui.playback.isLandscape()
+
+    Row(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+    Column(Modifier.weight(1f)) {
         Surface(
             shape = MaterialTheme.shapes.large,
             color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -1146,7 +1285,14 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
                     AsyncImage(
                         model = AppFiles.bookCoverFile(book.id),
                         contentDescription = book.title,
-                        modifier = Modifier.fillMaxWidth(0.55f),
+                        // In landscape the Surface shares the (short) window
+                        // height with the trailing rail — an intrinsic-height
+                        // cover pushed the rail below the fold entirely.
+                        modifier = Modifier
+                            .fillMaxWidth(0.55f)
+                            .then(
+                                if (landscape) Modifier.heightIn(max = 180.dp) else Modifier
+                            ),
                     )
                     Spacer(Modifier.height(12.dp))
                 }
@@ -1174,7 +1320,7 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { if (isActive) audio.seekByMs(-15_000L) else startPlayback(chapterIndex, 0) }) {
-                        Icon(Icons.Default.Replay10, contentDescription = "Back 15 seconds")
+                        com.speechnotes.app.ui.playback.SkipSecondsIcon(seconds = 15, forward = false)
                     }
                     IconButton(onClick = {
                         val prev = (chapterIndex - 1).coerceAtLeast(0)
@@ -1194,7 +1340,7 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
                         startPlayback(next, 0)
                     }) { Icon(Icons.Default.SkipNext, contentDescription = "Next chapter") }
                     IconButton(onClick = { if (isActive) audio.seekByMs(15_000L) }) {
-                        Icon(Icons.Default.Forward10, contentDescription = "Forward 15 seconds")
+                        com.speechnotes.app.ui.playback.SkipSecondsIcon(seconds = 15, forward = true)
                     }
                     Box {
                         var sleepMenu by remember { mutableStateOf(false) }
@@ -1258,10 +1404,36 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
                             contentDescription = "Play chapter ${index + 1}",
                             tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    },
-                    modifier = Modifier.clickable { startPlayback(index, 0) },
+                },
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
+        }
+        }
+        if (landscape) {
+            com.speechnotes.app.ui.playback.PlaybackRail(
+                vm = vm,
+                progress = if (shownDuration > 0) positionMs.toDouble() / shownDuration else null,
+                isGenerating = false,
+                isSpeaking = isActive && playing,
+                isPlayEnabled = true,
+                onTogglePlay = {
+                    if (isActive) audio.togglePlay()
+                    else startPlayback(chapterIndex, vm.savedAudioOffsetMs(book))
+                },
+                onStop = if (isActive) {
+                    { audio.stop() }
+                } else null,
+                stepLabel = "Ch ${chapterIndex + 1}/${chapters.size.coerceAtLeast(0)}",
+                onStepBack = { startPlayback((chapterIndex - 1).coerceAtLeast(0), 0) },
+                onStepForward = {
+                    startPlayback((chapterIndex + 1).coerceAtMost((chapters.size - 1).coerceAtLeast(0)), 0)
+                },
+                stepBackEnabled = chapterIndex > 0,
+                stepForwardEnabled = chapterIndex < chapters.size - 1,
+                rate = speed.toDouble(),
+                onRateChange = { audio.setSpeed(it.toFloat()) },
+            )
         }
     }
 }

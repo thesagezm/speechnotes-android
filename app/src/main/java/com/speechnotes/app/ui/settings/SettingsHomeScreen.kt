@@ -11,7 +11,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Backup
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notes
@@ -69,11 +68,6 @@ fun SettingsHomeScreen(
                 title = "Appearance",
                 subtitle = "Accent, theme, reader, spacing",
             ) { onOpen("settings/appearance") }
-            SettingsLinkRow(
-                icon = Icons.Default.GraphicEq,
-                title = "Stats & goals",
-                subtitle = "Reading time, streak, heatmap, goals",
-            ) { onOpen("settings/stats") }
             SettingsLinkRow(
                 icon = Icons.Default.Wifi,
                 title = "BookDrop",

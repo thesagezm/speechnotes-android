@@ -46,6 +46,23 @@ data class Book(
      * recoverable; purge() is the one real removal.
      */
     val deletedAt: Long? = null,
+    /**
+     * Per-book Force-OCR toggle (iOS Book.forceOCR, v1.8.x): when true, PDF
+     * chapter text comes from ML Kit recognition even where a native text
+     * layer exists.
+     *
+     * DIVERGENCE from iOS: the iOS Book is Core Data / file-backed and its
+     * Books are NOT JSON-interchangeable with the Android manifest — the
+     * Android JSON field names here ("forceOCR"/"pdfIsScanned") are Android
+     * local (the JSON contract with iOS covers notes + preference keys, not
+     * book manifests).
+     */
+    val forceOCR: Boolean = false,
+    /**
+     * Set once a chapter had to be OCRed (no usable text layer — the
+     * scanned-CamScanner shape). Drives the shelf's "Scanned — OCR" badge.
+     */
+    val pdfIsScanned: Boolean = false,
 ) {
     companion object {
         const val FORMAT_EPUB = "epub"

@@ -106,13 +106,18 @@ class SpeechPlaybackService : Service() {
         override fun onPause() = route(Command.Pause)
         override fun onSkipToNext() = route(Command.Next)
         override fun onSkipToPrevious() = route(Command.Previous)
+        override fun onFastForward() = route(Command.FastForward)
+        override fun onRewind() = route(Command.Rewind)
         override fun onStop() = route(Command.Stop)
         override fun onSeekTo(pos: Long) {
             if (bookIsActive) audioBooks?.seekToMs(pos)
         }
     }
 
-    private enum class Command { Toggle, Play, Pause, Next, Previous, Stop }
+    private enum class Command { Toggle, Play, Pause, Next, Previous, Stop, Rewind, FastForward }
+
+    /** The lock-screen ±15 s skip (R6c — iOS uses 15 s). */
+    private val SKIP_MS = 15_000L
 
     private fun route(command: Command) {
         if (bookIsActive) {
@@ -124,6 +129,8 @@ class SpeechPlaybackService : Service() {
                 Command.Stop -> books.stop()
                 Command.Next -> books.stepChapter(1)
                 Command.Previous -> books.stepChapter(-1)
+                Command.Rewind -> books.seekByMs(-SKIP_MS)
+                Command.FastForward -> books.seekByMs(SKIP_MS)
             }
             return
         }
@@ -135,6 +142,8 @@ class SpeechPlaybackService : Service() {
             Command.Stop -> player.stop()
             Command.Next -> player.remoteChapterSkip(1)
             Command.Previous -> player.remoteChapterSkip(-1)
+            Command.Rewind -> player.remoteSkipSeconds(-15)
+            Command.FastForward -> player.remoteSkipSeconds(15)
         }
     }
 
@@ -253,6 +262,10 @@ class SpeechPlaybackService : Service() {
                         PlaybackStateCompat.ACTION_STOP or
                         PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
                         PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                        // R6c: expose ±15 s skips to lock screens that render
+                        // rewind/ffwd from these actions.
+                        PlaybackStateCompat.ACTION_REWIND or
+                        PlaybackStateCompat.ACTION_FAST_FORWARD or
                         PlaybackStateCompat.ACTION_SEEK_TO,
                 )
                 .setState(state, positionMs, speed)
@@ -274,6 +287,22 @@ class SpeechPlaybackService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val toggleIcon = if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+        // R6c: TTS sessions carry ±15 s skips on the notification (books keep
+        // their chapter transport; their ±15 s rides the session's
+        // REWIND/FAST_FORWARD actions for headsets and lock screens).
+        val actions: List<Triple<Int, String, Command>> = if (withSkips) {
+            listOf(
+                Triple(android.R.drawable.ic_media_previous, "Previous", Command.Previous),
+                Triple(toggleIcon, if (playing) "Pause" else "Play", Command.Toggle),
+                Triple(android.R.drawable.ic_menu_close_clear_cancel, "Stop", Command.Stop),
+            )
+        } else {
+            listOf(
+                Triple(android.R.drawable.ic_media_rew, "Back 15 s", Command.Rewind),
+                Triple(toggleIcon, if (playing) "Pause" else "Play", Command.Toggle),
+                Triple(android.R.drawable.ic_media_ff, "Forward 15 s", Command.FastForward),
+            )
+        }
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle(title)
@@ -282,12 +311,10 @@ class SpeechPlaybackService : Service() {
             .setOngoing(playing)
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .addAction(
-                android.R.drawable.ic_media_previous, "Previous",
-                commandPendingIntent(Command.Previous, 1),
-            )
-            .addAction(toggleIcon, if (playing) "Pause" else "Play", commandPendingIntent(Command.Toggle, 2))
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", commandPendingIntent(Command.Stop, 3))
+        actions.forEachIndexed { index, (icon, label, command) ->
+            builder.addAction(icon, label, commandPendingIntent(command, index + 1))
+        }
+        builder
             .setStyle(
                 androidx.media.app.NotificationCompat.MediaStyle()
                     .setMediaSession(session.sessionToken)

@@ -1,15 +1,23 @@
 package com.speechnotes.app.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,20 +43,29 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.speechnotes.app.data.SpeechnotesViewModel
 import com.speechnotes.app.logic.AppFiles
 import com.speechnotes.app.speech.SpeechPlayer
 import com.speechnotes.app.speech.SpeechState
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * The global mini-player: a bar pinned above the navigation bar while speech
@@ -109,16 +126,21 @@ fun MiniPlayerOverlay(
     val noteBarVisible = state.isActive && !vm.player.isAuditioning &&
         audioBook == null && wavURL == null && !suppressed
 
-    Column(modifier = modifier) {
-        AnimatedVisibility(
-            visible = exportBarVisible,
-            enter = expandVertically(),
-            exit = shrinkVertically(),
-        ) {
-            val url = wavURL ?: return@AnimatedVisibility
-            if (collapsed) {
-                ExportBubble(onExpand = { vm.miniPlayerCollapsed = false })
-            } else {
+    val prefs = remember {
+        vm.context.getSharedPreferences("speechnotes", android.content.Context.MODE_PRIVATE)
+    }
+
+    Box(modifier = modifier) {
+        // Expanded bars keep their bottom-docked Column; the collapsed
+        // bubbles float anywhere and live in [EdgeSnappingBubble] (only one
+        // dock owner is visible at a time).
+        Column(Modifier.align(Alignment.BottomCenter)) {
+            AnimatedVisibility(
+                visible = exportBarVisible && !collapsed,
+                enter = expandVertically(),
+                exit = shrinkVertically(),
+            ) {
+                val url = wavURL ?: return@AnimatedVisibility
                 ExportMiniBar(
                     name = url.nameWithoutExtension,
                     playing = !wavPaused,
@@ -133,19 +155,12 @@ fun MiniPlayerOverlay(
                     onTap = { exportTapJumper?.invoke() },
                 )
             }
-        }
-        AnimatedVisibility(
-            visible = bookBarVisible,
-            enter = expandVertically(),
-            exit = shrinkVertically(),
-        ) {
-            val book = audioBook ?: return@AnimatedVisibility
-            if (collapsed) {
-                AudioBookBubble(
-                    playing = audioPlaying,
-                    onExpand = { vm.miniPlayerCollapsed = false },
-                )
-            } else {
+            AnimatedVisibility(
+                visible = bookBarVisible && !collapsed,
+                enter = expandVertically(),
+                exit = shrinkVertically(),
+            ) {
+                val book = audioBook ?: return@AnimatedVisibility
                 AudioBookMiniBar(
                     book = book,
                     chapterTitle = audioChapter,
@@ -162,19 +177,11 @@ fun MiniPlayerOverlay(
                     onTap = onJumpToBook,
                 )
             }
-        }
-        AnimatedVisibility(
-            visible = noteBarVisible,
-            enter = expandVertically(),
-            exit = shrinkVertically(),
-        ) {
-            if (collapsed) {
-                MiniPlayerBubble(
-                    state = state,
-                    progress = progress,
-                    onExpand = { vm.miniPlayerCollapsed = false },
-                )
-            } else {
+            AnimatedVisibility(
+                visible = noteBarVisible && !collapsed,
+                enter = expandVertically(),
+                exit = shrinkVertically(),
+            ) {
                 MiniPlayerBar(
                     state = state,
                     progress = progress,
@@ -195,8 +202,157 @@ fun MiniPlayerOverlay(
                 )
             }
         }
+
+        if (collapsed) {
+            // Expand taps land within one frame and buzz (FEEL).
+            fun expand() {
+                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                vm.miniPlayerCollapsed = false
+            }
+            if (exportBarVisible) {
+                EdgeSnappingBubble(prefs) { ExportBubble(onExpand = ::expand) }
+            } else if (bookBarVisible) {
+                EdgeSnappingBubble(prefs) {
+                    AudioBookBubble(playing = audioPlaying, onExpand = ::expand)
+                }
+            } else if (noteBarVisible) {
+                EdgeSnappingBubble(prefs) {
+                    MiniPlayerBubble(state = state, progress = progress, onExpand = ::expand)
+                }
+            }
+        }
     }
 }
+
+/**
+ * The user-movable floating bubble (iOS GlobalMiniPlayerOverlay
+ * EdgeSnappingBubble, v1.7.2): the bubble's CENTER lives in a normalized
+ * (0…1, 0…1) spot persisted in the shared prefs under the exact iOS key
+ * names "miniBubbleX"/"miniBubbleY", so the chosen corner survives relaunch
+ * (the keys are the cross-platform preference contract). Dragging moves it
+ * freely; releasing snaps it to the nearest of the four edges, keeping the
+ * along-edge coordinate. Tap vs drag: the bubble content stays clickable —
+ * the drag detector only claims the touch past the system slop, so a tap
+ * never turns into a micro-drag.
+ */
+@Composable
+private fun EdgeSnappingBubble(
+    prefs: android.content.SharedPreferences,
+    content: @Composable () -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val scope = rememberCoroutineScope()
+        val footprint = 72.dp // 56dp bubble + its 16dp breathing padding
+        var storedX by remember { mutableFloatStateOf(prefs.getFloat(BUBBLE_X_KEY, 1f)) }
+        var storedY by remember { mutableFloatStateOf(prefs.getFloat(BUBBLE_Y_KEY, 1f)) }
+
+        val widthPx = constraints.maxWidth.toFloat()
+        val heightPx = constraints.maxHeight.toFloat()
+        val footprintPx = with(density) { footprint.toPx() }
+        val radiusPx = footprintPx / 2f
+        val marginPx = with(density) { 12.dp.toPx() }
+        // The bubble parks above the bottom dock zone (iOS bottomReserve:
+        // the tab bar) so it never covers a surface's own controls.
+        val bottomReservePx = with(density) { 64.dp.toPx() }
+        val minX = marginPx + radiusPx
+        val maxX = (widthPx - marginPx - radiusPx).coerceAtLeast(minX)
+        val minY = marginPx + radiusPx
+        val maxY = (heightPx - bottomReservePx - marginPx - radiusPx).coerceAtLeast(minY)
+        val rangeX = maxX - minX
+        val rangeY = maxY - minY
+
+        val position = remember {
+            Animatable(Offset(minX + rangeX * storedX, minY + rangeY * storedY), Offset.VectorConverter)
+        }
+        var dragging by remember { mutableStateOf(false) }
+
+        // Container size changed (rotation, window resize): re-place the
+        // bubble at its stored normalized spot unless a drag owns it.
+        LaunchedEffect(widthPx, heightPx) {
+            if (!dragging) {
+                position.snapTo(Offset(minX + rangeX * storedX, minY + rangeY * storedY))
+            }
+        }
+
+        Box(
+            Modifier
+                .offset {
+                    IntOffset(
+                        (position.value.x - footprintPx / 2).roundToInt(),
+                        (position.value.y - footprintPx / 2).roundToInt(),
+                    )
+                }
+                .size(footprint)
+                .pointerInput(minX, maxX, minY, maxY, rangeX, rangeY) {
+                    detectDragGestures(
+                        onDragStart = { dragging = true },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            // The Animatable's current value is
+                            // authoritative while dragging — accumulate the
+                            // per-event delta onto it and clamp to bounds.
+                            scope.launch {
+                                position.snapTo(
+                                    Offset(
+                                        (position.value.x + dragAmount.x).coerceIn(minX, maxX),
+                                        (position.value.y + dragAmount.y).coerceIn(minY, maxY),
+                                    ),
+                                )
+                            }
+                        },
+                        onDragEnd = {
+                            dragging = false
+                            val x = position.value.x
+                            val y = position.value.y
+                            // Snap to the nearest edge; the other coordinate
+                            // keeps its (clamped) place along that edge.
+                            val toLeft = x - minX
+                            val toRight = maxX - x
+                            val toTop = y - minY
+                            val toBottom = maxY - y
+                            val nearest = minOf(toLeft, toRight, toTop, toBottom)
+                            val snappedX = when (nearest) {
+                                toLeft -> minX
+                                toRight -> maxX
+                                else -> x
+                            }
+                            val snappedY = when (nearest) {
+                                toTop -> minY
+                                toBottom -> maxY
+                                else -> y
+                            }
+                            // Persist first, outside the animation: the
+                            // stored spot and the animated value then agree,
+                            // so the settle is the only visible motion.
+                            storedX = if (rangeX > 0) ((snappedX - minX) / rangeX) else 1f
+                            storedY = if (rangeY > 0) ((snappedY - minY) / rangeY) else 1f
+                            prefs.edit()
+                                .putFloat(BUBBLE_X_KEY, storedX)
+                                .putFloat(BUBBLE_Y_KEY, storedY)
+                                .apply()
+                            // Critically damped glide to the edge — a bouncy
+                            // spring here is what made the iOS drop read as
+                            // a rubber band.
+                            scope.launch {
+                                position.animateTo(
+                                    Offset(snappedX, snappedY),
+                                    tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                                )
+                            }
+                        },
+                        onDragCancel = { dragging = false },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            content()
+        }
+    }
+}
+
+private const val BUBBLE_X_KEY = "miniBubbleX"
+private const val BUBBLE_Y_KEY = "miniBubbleY"
 
 /** Audiobook mini bar: cover thumb, title/chapter, ±15 s, transport. */
 @Composable
@@ -255,7 +411,7 @@ private fun AudioBookMiniBar(
                 )
             }
             IconButton(onClick = { onSkip(-15_000L) }) {
-                Icon(Icons.Default.Replay10, contentDescription = "Back 15 seconds", modifier = Modifier.size(18.dp))
+                com.speechnotes.app.ui.playback.SkipSecondsIcon(seconds = 15, forward = false)
             }
             FilledIconButton(onClick = onTogglePlay) {
                 Icon(
@@ -264,7 +420,7 @@ private fun AudioBookMiniBar(
                 )
             }
             IconButton(onClick = { onSkip(15_000L) }) {
-                Icon(Icons.Default.Forward10, contentDescription = "Forward 15 seconds", modifier = Modifier.size(18.dp))
+                com.speechnotes.app.ui.playback.SkipSecondsIcon(seconds = 15, forward = true)
             }
             IconButton(onClick = onStop) {
                 Icon(Icons.Default.Stop, contentDescription = "Stop playback")
@@ -548,10 +704,10 @@ private fun ExportMiniBar(
                     )
                 }
                 IconButton(onClick = { onSkip(-15.0) }) {
-                    Icon(Icons.Default.Replay10, contentDescription = "Back 15 seconds", modifier = Modifier.size(18.dp))
+                    com.speechnotes.app.ui.playback.SkipSecondsIcon(seconds = 15, forward = false)
                 }
                 IconButton(onClick = { onSkip(15.0) }) {
-                    Icon(Icons.Default.Forward10, contentDescription = "Forward 15 seconds", modifier = Modifier.size(18.dp))
+                    com.speechnotes.app.ui.playback.SkipSecondsIcon(seconds = 15, forward = true)
                 }
                 Text(
                     "%.2f×".format(rate),

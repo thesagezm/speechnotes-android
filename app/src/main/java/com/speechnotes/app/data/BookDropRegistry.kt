@@ -19,6 +19,10 @@ object BookDropRegistry {
     @Volatile
     var receiver: LocalSendReceiver? = null
 
+    /** The send half (v1.8.1 port) — created next to the receiver in Application. */
+    @Volatile
+    var sender: LocalSendSender? = null
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
@@ -43,10 +47,37 @@ object BookDropRegistry {
             return
         }
         scope.launch {
-            runCatching { route(file) }.onFailure { error ->
-                LogStore.error("BookDrop: import of ${file.name} failed — ${error.message}")
-                receiver?.reportImport(file.name, file.length(), com.speechnotes.app.logic.BookDropRecord.Outcome.Failed(error.message ?: "Import failed"))
-            }
+            runCatching { route(file) }
+                .onSuccess {
+                    // The accept gate (BookDropCore.acceptedExtensions) only
+                    // lets landable formats through, so a handed-off file is
+                    // on its way into the library — record it (iOS reports
+                    // the awaited outcome; the importers here are
+                    // fire-and-forget, and their failures toast).
+                    //
+                    // The WAV and markdown routes report their own outcome
+                    // (they save to Exports / create a note and say so), so
+                    // they are not reported twice.
+                    val ext = file.extension.lowercase()
+                    if (ext in SELF_REPORTED_ROUTES) return@onSuccess
+                    val detail = if (ext == "jex") "Importing into notes" else "Importing into the shelf"
+                    receiver?.reportImport(
+                        file.name,
+                        file.length(),
+                        com.speechnotes.app.logic.BookDropRecord.Outcome.Imported(detail),
+                    )
+                }
+                .onFailure { error ->
+                    LogStore.error("BookDrop: import of ${file.name} failed — ${error.message}")
+                    receiver?.reportImport(file.name, file.length(), com.speechnotes.app.logic.BookDropRecord.Outcome.Failed(error.message ?: "Import failed"))
+                }
         }
     }
+
+    /**
+     * Routes that report their own BookDrop history entry (the WAV route
+     * and the markdown→note route), so the generic hand-off report above
+     * would double up.
+     */
+    private val SELF_REPORTED_ROUTES = setOf("wav", "md", "markdown", "txt", "text")
 }

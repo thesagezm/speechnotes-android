@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.MenuBook
@@ -94,6 +95,8 @@ fun BooksScreen(
     var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     var openBook by remember { mutableStateOf<Book?>(null) }
     var pendingDelete by remember { mutableStateOf<Book?>(null) }
+    // The book detail sheet's "Send with BookDrop" action.
+    var bookDropSendBook by remember { mutableStateOf<Book?>(null) }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -188,7 +191,8 @@ fun BooksScreen(
                     )
                 }
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
+                    // Wide screens get a 4th column; ~120dp cells stay readable everywhere.
+                    columns = GridCells.Adaptive(120.dp),
                     contentPadding = PaddingValues(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -234,10 +238,22 @@ fun BooksScreen(
                 openBook = null
                 vm.audioBooks.play(book, index, 0L)
             },
+            onSendWithBookDrop = {
+                openBook = null
+                bookDropSendBook = book
+            },
             onDelete = {
                 openBook = null
                 pendingDelete = book
             },
+        )
+    }
+
+    bookDropSendBook?.let { book ->
+        com.speechnotes.app.ui.settings.BookDropSendSheet(
+            vm = vm,
+            prefillBookId = book.id,
+            onDismiss = { bookDropSendBook = null },
         )
     }
 
@@ -517,6 +533,24 @@ private fun BookCoverCard(book: Book, onOpen: () -> Unit, onDelete: () -> Unit) 
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                     )
                 }
+                // R5: "Scanned — OCR" / "OCR forced" badges (iOS shelf parity)
+                // — a scanned PDF tells the user why the first open takes a
+                // moment, and Force-OCR shows the non-default reading mode.
+                if (book.format == Book.FORMAT_PDF && (book.pdfIsScanned || book.forceOCR)) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.9f),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 44.dp, bottom = 6.dp),
+                    ) {
+                        Text(
+                            if (book.forceOCR) "OCR forced" else "Scanned — OCR",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
                 // Spine/chapter count under the chip (iOS metaLine "N ch").
                 val chapterMeta = when (book.format) {
                     Book.FORMAT_EPUB -> book.spineCount?.takeIf { it > 0 }?.let { "$it ch" }
@@ -568,6 +602,7 @@ private fun BookDetailSheet(
     onOpenChapter: (Int) -> Unit,
     onPlayChapter: (Int) -> Unit,
     onPlayAudioChapter: (Int) -> Unit,
+    onSendWithBookDrop: () -> Unit = {},
     onDelete: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -613,6 +648,13 @@ private fun BookDetailSheet(
                 Icon(Icons.Default.MenuBook, contentDescription = null)
                 Spacer(Modifier.size(8.dp))
                 Text(if (book.format == Book.FORMAT_AUDIO) "Open audiobook player" else "Read")
+            }
+            Spacer(Modifier.height(4.dp))
+
+            TextButton(onClick = onSendWithBookDrop, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Computer, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.size(8.dp))
+                Text("Send with BookDrop", color = MaterialTheme.colorScheme.primary)
             }
             Spacer(Modifier.height(4.dp))
 

@@ -11,11 +11,18 @@ object SpeechText {
      * The text handed to an engine: sanitized (unspeakable code points
      * replaced by spaces) and whitespace-normalized, offsets preserved so
      * highlighting stays aligned with the source string.
+     *
+     * EXCEPTION, iOS 1fa3482 parity: when the raw draft carries maths, the
+     * formulas are expanded to their SPOKEN words first — an engine handed
+     * `$\beta$` reads "backslash beta" or nothing. Expansion changes
+     * lengths, so read-along highlighting can drift ON NOTES WITH FORMULAS;
+     * a formula spoken as words beats an offset that points at a backslash.
      */
     fun forText(text: String): String {
         if (text.isEmpty()) return text
-        val preserved = SpeechSanitizer.cleanedPreservingOffsets(text)
-        return preserved
+        val expanded =
+            if (text.contains('$') || text.contains('\\')) MathNotation.spokenText(text) else text
+        return SpeechSanitizer.cleanedPreservingOffsets(expanded)
     }
 
     /** Plain speech text for markdown: strip syntax, keep content. */

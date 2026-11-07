@@ -333,6 +333,25 @@ class SpeechPlayer(
         onRemoteChapterSkip?.invoke(delta)
     }
 
+    /**
+     * Lock-screen ±15 s skip during TTS narration (R6c — iOS uses 15 s):
+     * jump the session forward/back by [deltaSeconds] of spoken audio,
+     * estimated at the bookmark path's ~14.5 chars/sec and sentence-snapped
+     * through [playFromCurrent] — so it works for notes AND book chapters,
+     * and the book's auto-advance chain stays armed.
+     */
+    fun remoteSkipSeconds(deltaSeconds: Int) {
+        if (!_state.value.isActive) return
+        val charsNow = engineSpeechOffset +
+            if (playedCharsHighWater > 0) playedCharsHighWater
+            else _progress.value?.let { (it * spokenText.length).toInt() } ?: 0
+        val charsPerSecond = 14.5
+        val target = (charsNow + (deltaSeconds * charsPerSecond).toInt())
+            .coerceIn(0, maxOf(0, spokenText.length - 1))
+        LogStore.info("SpeechPlayer: remote skip ${deltaSeconds}s → char $target/${spokenText.length}")
+        playFromCurrent(target)
+    }
+
     private fun onFinish() {
         val ref = playing
         // Clear the session BEFORE the callback so a handler that starts the
@@ -530,6 +549,89 @@ class SpeechPlayer(
             title = title,
             baseOffset = if (startCharOffset > 0) startCharOffset else 0,
             honorBookmark = startCharOffset <= 0,
+        )
+    }
+
+    /** Identity of a book chapter for [playFrom] (iOS BookPlaybackRef). */
+    data class BookRef(val bookId: String, val chapterIndex: Int, val title: String)
+
+    /**
+     * Play [text] from a UTF-16 offset (iOS SpeechPlayer.playFrom, v1.8.1 —
+     * the "start reading here" primitive behind tap-a-paragraph, play-from-
+     * caret and the reader's narrate-from-spot). The offset is snapped to
+     * the sentence boundary at-or-before it (SentenceChunker.resumeOffset —
+     * playback always starts on a sentence, never mid-word), the suffix is
+     * spoken, and the read-along + bookmark math is remapped through the
+     * snapped offset so an interruption five seconds later still resumes
+     * from HERE, not from the top.
+     *
+     * Offset ≤ 0 is the plain restart path.
+     *
+     * SUPERSEDES A LIVE SESSION IN PLACE — deliberately NO stop() round-
+     * trip. The engines' speak() contract already supersedes (the streaming
+     * core bumps the generation; the system engine's epoch guards drop the
+     * stale callbacks), while a stop() here published an IDLE that landed
+     * after the new session had started and wiped the brand-new read-along
+     * state (the iOS 2026-10-15 device report, both symptoms). The offset
+     * indexes the text AS PASSED — callers hand the same string they
+     * display.
+     */
+    fun playFrom(
+        text: String,
+        offset: Int,
+        noteId: String? = null,
+        noteTitle: String? = null,
+        book: BookRef? = null,
+    ) {
+        if (text.isBlank()) return
+        // A note taking over ends book auto-advance (togglePlay's rule); a
+        // book play-from-point keeps the chain armed so the chapter still
+        // auto-advances.
+        if (book == null) onNaturalFinish = null
+        playing = PlaybackRef(
+            noteId = noteId,
+            bookId = book?.bookId,
+            chapterIndex = book?.chapterIndex,
+            title = noteTitle ?: book?.title ?: "Speaking",
+        )
+        _nowPlayingTitle.value = playing?.title
+        _nowPlayingNoteId.value = noteId
+        _nowPlayingBookId.value = book?.bookId
+
+        spokenText = text
+        playedCharsHighWater = 0
+        playStartedAt = 0
+        bankedElapsedMs = 0
+        beginReadAlong(text, SentenceChunker.sentencePieces(text))
+
+        val snapped = if (offset > 0) SentenceChunker.resumeOffset(text, offset) else 0
+        val suffix = if (snapped > 0) text.substring(snapped) else text
+        engineSpeechOffset = snapped
+        LogStore.info("SpeechPlayer: playFrom char $snapped/${text.length} (requested $offset)")
+        activeEngine?.speak(suffix, _rateMultiplier.value)
+        // Publish GENERATING synchronously if the engine didn't already (the
+        // streaming core does during its in-place supersession; the system
+        // TTS reaches it asynchronously from onStart) — same tap-path rule
+        // as speak(): the play control must never sit on a stale icon.
+        if (_state.value == SpeechState.IDLE) _state.value = SpeechState.GENERATING
+        requestFocus()
+        if (_auditioningVoice.value != null) stopAudition()
+    }
+
+    /**
+     * playFrom over the CURRENTLY playing text, keeping its note/book
+     * identity (and the book auto-advance chain) — the read-along surface's
+     * tap-a-paragraph hook. No-op with no active session.
+     */
+    fun playFromCurrent(offset: Int) {
+        val ref = playing ?: return
+        val book = ref.bookId?.let { BookRef(it, ref.chapterIndex ?: 0, ref.title) }
+        playFrom(
+            spokenText,
+            offset,
+            noteId = ref.noteId,
+            noteTitle = ref.title,
+            book = book,
         )
     }
 
@@ -824,6 +926,13 @@ class SpeechPlayer(
         val cleaned = text.trim()
         if (cleaned.isEmpty()) return
         val engine = activeEngine ?: return
+        // R6d (iOS SpeechPlayer.export parity): stop the live session FIRST —
+        // the export renders on the engine's generate queue, and sharing it
+        // with an active session interleaved offline synthesis with live
+        // playback pacing. After stop() the queue is exclusively the
+        // exporter's (the model is single-tenant: a play started during a
+        // long export queues behind it).
+        stop()
         _exportState.value = ExportState.Running(0.0)
         val output = File(com.speechnotes.app.logic.AppFiles.exportsDir, "${safeFilename(title)}.wav")
         when (engine) {

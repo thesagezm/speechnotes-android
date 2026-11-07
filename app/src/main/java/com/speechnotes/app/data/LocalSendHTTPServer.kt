@@ -89,6 +89,16 @@ class LocalSendHTTPServer {
     /** Called on a connection thread for every complete request. */
     var handler: ((LocalSendRequest) -> LocalSendResponse)? = null
 
+    /**
+     * Called on the connection thread while a request body streams in:
+     * (path, query, received bytes, expected bytes). Expected comes from
+     * Content-Length and is 0 when the head declared none. `received`
+     * == -1 means the peer hung up mid-body — clear any indicator built
+     * on this stream. Throttled to ~1% steps by the per-request
+     * [BodyProgressReporter].
+     */
+    var bodyProgress: ((path: String, query: Map<String, String>, received: Long, expected: Long) -> Unit)? = null
+
     @Volatile private var listener: ServerSocket? = null
 
     @Volatile var port: Int = 0
@@ -200,11 +210,18 @@ class LocalSendHTTPServer {
                 return
             }
             val (method, target, headers) = parsed
-            val body = accumulateBody(it, headers, bodyStart)
+            val path = pathOf(target)
+            val query = queryOf(target)
+            val contentLength = headers.entries
+                .firstOrNull { it.key.equals("content-length", true) }
+                ?.value?.toLongOrNull() ?: 0L
+            val progress = BodyProgressReporter(expected = contentLength, start = bodyStart.size.toLong())
+            progress.fire = { received, expected -> bodyProgress?.invoke(path, query, received, expected) }
+            val body = accumulateBody(it, headers, bodyStart, progress)
             val request = LocalSendRequest(
                 method = method,
-                path = pathOf(target),
-                query = queryOf(target),
+                path = path,
+                query = query,
                 headers = headers,
                 remoteHost = remoteHostOf(it),
                 bodySource = body,
@@ -241,7 +258,12 @@ class LocalSendHTTPServer {
         runCatching { URLDecoder.decode(text, "UTF-8") }.getOrDefault(text)
 
     /** Accumulates the body, spilling to a temp file past the threshold. */
-    private fun accumulateBody(socket: Socket, headers: Map<String, String>, initial: ByteArray): LocalSendRequest.Body {
+    private fun accumulateBody(
+        socket: Socket,
+        headers: Map<String, String>,
+        initial: ByteArray,
+        progress: BodyProgressReporter,
+    ): LocalSendRequest.Body {
         val remaining = headers.entries
             .firstOrNull { it.key.equals("content-length", true) }
             ?.value?.toLongOrNull() ?: 0L
@@ -254,6 +276,7 @@ class LocalSendHTTPServer {
 
         fun append(chunk: ByteArray) {
             total += chunk.size
+            progress.report(total)
             val file = spilled
             if (file != null) {
                 trailing!!.write(chunk)
@@ -292,6 +315,8 @@ class LocalSendHTTPServer {
         // partial bytes — an empty body makes every upload endpoint's size
         // check (422) fail naturally, and prepare/cancel don't read bodies.
         if (total != remaining) {
+            // The observer must not keep a bar for a stream that died.
+            progress.connectionDied()
             spilled?.let { discardBody(it) }
             return LocalSendRequest.Body.Memory(ByteArray(0))
         }
@@ -399,5 +424,34 @@ class LocalSendHTTPServer {
             }
             return digest.digest().joinToString("") { "%02x".format(it) }
         }
+    }
+}
+
+/**
+ * Throttled byte-progress for ONE streaming request body. Fires at most once
+ * per ~1% of the body (or 256 KB, whichever is larger) plus the final byte,
+ * so observing a gigabyte upload costs the UI a few dozen hops, not one per
+ * receive.
+ */
+class BodyProgressReporter(
+    private val expected: Long,
+    start: Long,
+) {
+    /** (received, expected) — expected is 0 when the head declared no Content-Length. */
+    var fire: ((received: Long, expected: Long) -> Unit)? = null
+
+    private var lastReported = start
+
+    fun report(received: Long) {
+        val sink = fire ?: return
+        val step = maxOf(expected / 100, 1L shl 18)
+        if (received != expected && received - lastReported < step) return
+        lastReported = received
+        sink(received, expected)
+    }
+
+    /** The peer hung up mid-body: one last report with received == -1. */
+    fun connectionDied() {
+        fire?.invoke(-1, expected)
     }
 }

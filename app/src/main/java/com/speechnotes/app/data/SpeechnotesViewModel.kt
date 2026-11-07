@@ -10,6 +10,8 @@ import com.speechnotes.app.model.Notebook
 import com.speechnotes.app.logic.DocumentBook
 import com.speechnotes.app.logic.DocumentEpubConverter
 import com.speechnotes.app.logic.DocumentParseError
+import com.speechnotes.app.logic.PdfOcrMerge
+import com.speechnotes.app.logic.SpeechSanitizer
 import com.speechnotes.app.speech.EngineKind
 import com.speechnotes.app.speech.ModelFiles
 import com.speechnotes.app.speech.SpeechPlayer
@@ -86,13 +88,96 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
         // block (same relative order: init before attach).
         // E2: BookDrop landed files route into the same importers the share
         // intents use, with a history entry per outcome.
+        // iOS v1.8.1 routing parity (SpeechnotesApp.swift):
+        //   .jex  → the notes (JEX importer)
+        //   .wav  → Exports, beside the app's own recordings
+        //   .md/.txt → a NOTE (the book importer would flatten it to a
+        //              one-chapter EPUB)
+        //   everything else → the shelf
         com.speechnotes.app.data.BookDropRegistry.registerImporter { file ->
             val ext = file.extension.lowercase()
-            if (ext == "jex") {
-                importJex(android.net.Uri.fromFile(file))
-            } else {
-                importBook(android.net.Uri.fromFile(file))
+            when (ext) {
+                "jex" -> importJex(android.net.Uri.fromFile(file))
+                "wav" -> importBookDropRecording(file)
+                "md", "markdown", "txt", "text" -> importBookDropNote(file)
+                else -> importBook(android.net.Uri.fromFile(file))
             }
+        }
+    }
+
+    /**
+     * A received WAV is exported audio, not a book: it lands in Exports
+     * beside the ones the note export pipeline writes, so Storage lists it
+     * at once (iOS LocalSendReceiver routing parity).
+     */
+    private fun importBookDropRecording(file: java.io.File) {
+        appScope.launch {
+            val target = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val dir = com.speechnotes.app.logic.AppFiles.exportsDir
+                dir.mkdirs()
+                // Never overwrite a recording that is already there.
+                var candidate = java.io.File(dir, file.name)
+                if (candidate.exists()) {
+                    val stem = file.nameWithoutExtension
+                    candidate = java.io.File(dir, "${java.util.UUID.randomUUID().toString().take(6)}-$stem.${file.extension}")
+                }
+                runCatching { file.copyTo(candidate, overwrite = false); candidate }.getOrNull()
+            }
+            if (target == null) {
+                com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
+                    file.name, file.length(),
+                    com.speechnotes.app.logic.BookDropRecord.Outcome.Failed("Could not save the recording"),
+                )
+                return@launch
+            }
+            exports.refresh()
+            com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
+                target.nameWithoutExtension, target.length(),
+                com.speechnotes.app.logic.BookDropRecord.Outcome.Imported("Saved to Exported audio"),
+            )
+            runCatching { file.delete() }
+        }
+    }
+
+    /**
+     * Markdown/plain text sent from another device is a NOTE (iOS routes it
+     * to the notes). The first heading becomes the title; the rest is the
+     * body.
+     */
+    private fun importBookDropNote(file: java.io.File) {
+        appScope.launch {
+            val text = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { file.readText() }.getOrNull()
+            }
+            if (text == null) {
+                com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
+                    file.name, file.length(),
+                    com.speechnotes.app.logic.BookDropRecord.Outcome.Failed("Could not read that file"),
+                )
+                return@launch
+            }
+            val heading = text.lineSequence()
+                .map { it.trim() }
+                .firstOrNull { it.startsWith("#") }
+                ?.trimStart('#')
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val title = heading ?: file.nameWithoutExtension
+            val body = if (heading != null) {
+                text.lineSequence()
+                    .dropWhile { it.trim().startsWith("#") && it.trim().trimStart('#').trim() == heading }
+                    .joinToString("\n")
+                    .trimStart('\n', ' ')
+            } else {
+                text
+            }
+            val note = notes.createNote()
+            notes.update(note.copy(text = body, explicitTitle = title.take(80)))
+            com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
+                title, file.length(),
+                com.speechnotes.app.logic.BookDropRecord.Outcome.Imported("Saved as a note"),
+            )
+            runCatching { file.delete() }
         }
     }
 
@@ -344,6 +429,21 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
             player.toggle()
             return
         }
+        startChapterChain(book, chapterIndex, fraction, page)
+    }
+
+    /**
+     * R3 (iOS 583acdb): move the speech to a spot NOW — a Contents jump
+     * during read-along re-narrates from the jumped-to chapter/page instead
+     * of only scrolling the view. Unlike [toggleBookChapter] this starts a
+     * FRESH session even while the book is narrating; the player's in-place
+     * supersession ends the old one and the chapter chain re-arms from here.
+     */
+    fun narrateFromSpot(book: Book, chapterIndex: Int, fraction: Double = 0.0, page: Int = -1) {
+        startChapterChain(book, chapterIndex, fraction, page)
+    }
+
+    private fun startChapterChain(book: Book, chapterIndex: Int, fraction: Double = 0.0, page: Int = -1) {
         narratingBook = book
         appScope.launch {
             var index = chapterIndex.coerceAtLeast(0)
@@ -570,10 +670,13 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
         _themeState.value = _themeState.value.copy(readerTheme = theme)
         // The EPUB reader's own theme rides ReaderAppearance (light/sepia/
         // dark/trueBlack) — keep the two in sync so the shelf's segmented
-        // control and the reader's appearance sheet agree.
+        // control and the reader's appearance sheet agree. TRUE_BLACK has
+        // its own value: collapsing it to "dark" made the reader's true
+        // black unreachable from this control.
         val jsTheme = when (theme) {
             ReaderTheme.SEPIA -> "sepia"
-            ReaderTheme.DARK, ReaderTheme.TRUE_BLACK -> "dark"
+            ReaderTheme.DARK -> "dark"
+            ReaderTheme.TRUE_BLACK -> "trueBlack"
             else -> "light"
         }
         updateReaderAppearance { it.copy(theme = jsTheme) }
@@ -1276,6 +1379,38 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
         return if (hours > 0) "$hours h ${minutes % 60} min" else "$minutes min"
     }
 
+    /**
+     * R5: stamp + persist the "this PDF is a scan" fact (drives the shelf's
+     * "Scanned — OCR" badge). One-way — un-OCRing a scan doesn't make the
+     * text layer exist.
+     */
+    private fun markBookScanned(book: Book) {
+        if (book.pdfIsScanned) return
+        val current = books.book(book.id) ?: book
+        if (current.pdfIsScanned) return
+        books.save(current.copy(pdfIsScanned = true))
+        LogStore.info("Books: \"${book.title.take(40)}\" marked as scanned (OCR contributed text)")
+    }
+
+    /**
+     * R5: the per-book Force-OCR toggle (iOS Book.forceOCR). Flipping it
+     * invalidates the cached chapter text — it was extracted under the old
+     * OCR policy, and stale text would be worse than re-OCRing.
+     */
+    fun setBookForceOcr(bookId: String, enabled: Boolean) {
+        val book = books.book(bookId) ?: return
+        books.save(book.copy(forceOCR = enabled))
+        if (book.format == Book.FORMAT_PDF) {
+            runCatching {
+                for (i in book.chapters.indices) {
+                    com.speechnotes.app.logic.AppFiles.bookSpeechTextFile(bookId, i).delete()
+                    com.speechnotes.app.logic.AppFiles.bookSpeechOffsetsFile(bookId, i).delete()
+                }
+            }
+        }
+        showToast(if (enabled) "Force OCR on — pages will be recognized" else "Force OCR off — native text layer used when present")
+    }
+
     /** Extracts one chapter's speech text (EPUB from the zip, PDF via PdfText). */
     suspend fun chapterText(book: Book, chapterIndex: Int): String? = withContext(kotlinx.coroutines.Dispatchers.IO) {
         when (book.format) {
@@ -1295,6 +1430,17 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
                 val cached = com.speechnotes.app.logic.AppFiles.bookSpeechTextFile(book.id, chapterIndex)
                 if (cached.isFile && cached.length() > 0) return@withContext cached.readText()
                 val original = com.speechnotes.app.logic.AppFiles.bookOriginalFile(book.id, originalExtension(book))
+                // R5 (iOS PdfSpeechText parity): Force-OCR skips the native
+                // extraction entirely — every page comes from recognition.
+                if (book.forceOCR) {
+                    val chapter = book.chapters.getOrNull(chapterIndex)
+                    val ocr = chapter?.let { ocrChapterPages(original, it.startPage, it.endPage) }
+                    if (!ocr.isNullOrBlank()) {
+                        markBookScanned(book)
+                        runCatching { cached.parentFile?.mkdirs(); cached.writeText(ocr) }
+                        ocr
+                    } else null
+                } else {
                 val source = PdfPageSource(original)
                 val pdfChapters = book.chapters.map { com.speechnotes.app.logic.PdfText.PdfChapter(it.label, it.startPage, it.endPage) }
                 val result = com.speechnotes.app.logic.PdfText.chapterText(source, pdfChapters, chapterIndex)
@@ -1317,12 +1463,16 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
                 }
                 // Scanned PDF: no embedded text layer → OCR the chapter's
                 // pages with ML Kit and cache the result (iOS OCR parity).
+                // This ALSO stamps pdfIsScanned — the shelf's "Scanned — OCR"
+                // badge — once the book is known to be a scan.
                 val chapter = book.chapters.getOrNull(chapterIndex) ?: return@withContext null
                 val ocr = ocrChapterPages(original, chapter.startPage, chapter.endPage)
                 if (!ocr.isNullOrBlank()) {
+                    markBookScanned(book)
                     runCatching { cached.parentFile?.mkdirs(); cached.writeText(ocr) }
                     ocr
                 } else null
+                }
             }
             else -> null
         }
@@ -1374,6 +1524,155 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
         val dir = com.speechnotes.app.logic.AppFiles.bookDirectory(book.id)
         val original = dir.listFiles()?.firstOrNull { it.name.startsWith("original.") } ?: return book.format
         return original.name.removePrefix("original.")
+    }
+
+    // MARK: - Note import with OCR (R4 — iOS ImportService parity)
+
+    /**
+     * Note-import OCR progress: (pages recognized so far, pages OCRed in
+     * total). Null while idle. The recognizer runs off-main; this is what a
+     * progress surface observes.
+     */
+    private val _noteOcrProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val noteOcrProgress: StateFlow<Pair<Int, Int>?> = _noteOcrProgress.asStateFlow()
+
+    /** A file imported into a note. [ocrPages] > 0 means ML Kit contributed. */
+    data class NoteImportResult(val name: String, val text: String, val ocrPages: Int)
+
+    /**
+     * Import a picked file into a NOTE (iOS ImportService.importPdf parity):
+     * text/office files decode as before; a PDF gets the native-text-per-
+     * page walk with ML Kit OCR filling pages whose text layer is absent or
+     * watermark-thin (PdfOcrMerge owns the decision — the CamScanner shape
+     * included), capped at the note-import numbers (150 pages / 1M chars /
+     * 25 OCR'd pages). Returns null when nothing survived — the caller
+     * toasts; failures are NEVER silent.
+     */
+    suspend fun importNoteFrom(uri: android.net.Uri): NoteImportResult? {
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val name = runCatching {
+                ModelManagerImportHelper.queryName(context, uri) ?: "imported"
+            }.getOrDefault("imported")
+            val bytes = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull() ?: return@withContext null
+            val ext = name.substringAfterLast('.', "").lowercase()
+            if (ext == "pdf") {
+                pdfNoteText(bytes, name)
+            } else {
+                val imported = models.importTextFrom(uri) ?: return@withContext null
+                NoteImportResult(imported.first, imported.second, 0)
+            }
+        }
+    }
+
+    /**
+     * The PDF walk behind [importNoteFrom]: per page, take the native text
+     * layer, OCR it (ML Kit latin) when the layer is absent/thin or OCR is
+     * forced, and merge through [PdfOcrMerge]. Every page runs on the IO
+     * dispatcher; ML Kit is bridged with a suspend. Progress publishes per
+     * OCRed page.
+     */
+    suspend fun pdfNoteText(bytes: ByteArray, fileName: String, forceOCR: Boolean = false): NoteImportResult? {
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val doc = runCatching { com.tom_roush.pdfbox.pdmodel.PDDocument.load(bytes) }.getOrNull()
+                ?: return@withContext null
+            try {
+                val pageCount = minOf(doc.numberOfPages, PdfOcrMerge.MAX_NOTE_PAGES)
+                // Pass 1 — read the native text layers and plan which pages
+                // need recognition (absent/thin layer, or forced). Cheap per
+                // page: a stripper run, no bitmaps held.
+                val native = arrayOfNulls<String>(pageCount)
+                val needsOcr = BooleanArray(pageCount)
+                var totalNeedingOcr = 0
+                for (page in 0 until pageCount) {
+                    native[page] = runCatching {
+                        val stripper = com.tom_roush.pdfbox.text.PDFTextStripper()
+                        stripper.startPage = page + 1
+                        stripper.endPage = page + 1
+                        stripper.getText(doc)
+                    }.getOrNull()
+                    needsOcr[page] = PdfOcrMerge.pageNeedsOcr(native[page], forceOCR)
+                    if (needsOcr[page]) totalNeedingOcr++
+                }
+                // Pass 2 — recognize the planned pages (cap-bounded). Native
+                // pages pass through untouched: OCR never duplicates them.
+                val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(
+                    com.google.mlkit.vision.text.latin.TextRecognizerOptions.Builder().build(),
+                )
+                val renderer = com.tom_roush.pdfbox.rendering.PDFRenderer(doc)
+                val pages = ArrayList<com.speechnotes.app.logic.PdfOcrMerge.Page>(pageCount)
+                var ocrSpent = 0
+                try {
+                    for (page in 0 until pageCount) {
+                        if (!needsOcr[page]) {
+                            pages.add(PdfOcrMerge.Page(native[page]))
+                            continue
+                        }
+                        if (PdfOcrMerge.remainingOcrPages(ocrSpent) == 0) {
+                            // Past the OCR cap a scanned page is dropped: its
+                            // text layer is the watermark — appending that is
+                            // worse than dropping it (iOS rule).
+                            pages.add(PdfOcrMerge.Page(null))
+                            continue
+                        }
+                        val bitmap = runCatching { renderer.renderImage(page, 2.0f) }.getOrNull()
+                        val ocrText = if (bitmap == null) null else recognizeBitmap(recognizer, bitmap)
+                        if (!ocrText.isNullOrBlank()) ocrSpent++
+                        pages.add(
+                            PdfOcrMerge.Page(ocrText?.takeIf { it.isNotBlank() }, wasOcr = true)
+                        )
+                        _noteOcrProgress.value = ocrSpent to totalNeedingOcr
+                    }
+                } finally {
+                    runCatching { recognizer.close() }
+                }
+                val merged = PdfOcrMerge.merge(
+                    pages,
+                    PdfOcrMerge.MAX_NOTE_TEXT_CHARS,
+                    "[Text truncated at ${PdfOcrMerge.MAX_NOTE_TEXT_CHARS / 1000}k characters — import large PDFs on the Books tab instead.]",
+                ) ?: return@withContext null
+                NoteImportResult(
+                    fileName,
+                    SpeechSanitizer.clean(merged.text),
+                    merged.ocrPages,
+                )
+            } finally {
+                runCatching { doc.close() }
+                _noteOcrProgress.value = null
+            }
+        }
+    }
+
+    /** One ML Kit recognition over a bitmap, bridged off the Task API. */
+    private suspend fun recognizeBitmap(
+        recognizer: com.google.mlkit.vision.text.TextRecognizer,
+        bitmap: android.graphics.Bitmap,
+    ): String? = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+        val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bitmap, 0)
+        recognizer.process(image)
+            .addOnSuccessListener { text -> cont.resume(text.text) { _ -> } }
+            .addOnFailureListener { cont.resume(null) { _ -> } }
+    }
+
+    /**
+     * OCR one image (the editor's photo-picker bytes) into note text — the
+     * image lands as markdown AND its recognized text is offered to the
+     * note. Null when recognition found nothing (caller toasts).
+     */
+    suspend fun recognizeImageText(bytes: ByteArray): String? {
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val bitmap = runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+                .getOrNull() ?: return@withContext null
+            val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(
+                com.google.mlkit.vision.text.latin.TextRecognizerOptions.Builder().build(),
+            )
+            try {
+                recognizeBitmap(recognizer, bitmap)?.trim()?.takeIf { it.isNotEmpty() }
+            } finally {
+                runCatching { recognizer.close() }
+            }
+        }
     }
 
     fun deleteBook(book: Book) {

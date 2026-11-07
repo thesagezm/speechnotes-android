@@ -63,7 +63,32 @@ fun AppearanceSettingsScreen(vm: SpeechnotesViewModel, onBack: () -> Unit) {
         ReaderThemeRow(vm)
         TextScaleRow(vm)
         SpacingSliders(vm)
+        KeepScreenOnRow()
     }
+}
+
+/** Keep Screen On (iOS Settings → Reading; commit 484e564): the screen's
+ *  idle timer is held off while a reading surface is on screen. Default ON. */
+@Composable
+private fun KeepScreenOnRow() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var enabled by remember {
+        mutableStateOf(com.speechnotes.app.ui.playback.ScreenAwakeRegistry.readPreference(context))
+    }
+    ListItem(
+        headlineContent = { Text("Keep screen on", fontWeight = FontWeight.Medium) },
+        supportingContent = { Text("While reading — the screen won't dim mid-page") },
+        trailingContent = {
+            androidx.compose.material3.Switch(
+                checked = enabled,
+                onCheckedChange = {
+                    com.speechnotes.app.ui.playback.ScreenAwakeRegistry.setPreference(context, it)
+                    enabled = it
+                },
+            )
+        },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

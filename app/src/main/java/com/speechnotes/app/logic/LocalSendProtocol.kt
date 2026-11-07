@@ -70,6 +70,19 @@ data class BookDropRecord(
 }
 
 /**
+ * The file currently streaming INTO this device. `total` is the
+ * sender-declared size; 0 means unknown (the bar shows indeterminate).
+ */
+data class IncomingTransfer(
+    val fileName: String,
+    val received: Long,
+    val total: Long,
+) {
+    val fraction: Double?
+        get() = if (total > 0) minOf(received.toDouble() / total, 1.0) else null
+}
+
+/**
  * The BookDrop protocol state machine — no sockets, no Android, no clock of
  * its own ([now] is injected so the session timeout is testable).
  *
@@ -200,7 +213,14 @@ class BookDropCore(
             if (!landed) return LocalSendResponse.status(500)
 
             session.receivedIds.add(fileId)
-            if (session.receivedIds.size >= session.files.size) complete(session)
+            if (session.receivedIds.size >= session.files.size) {
+                // Mark complete but KEEP the session: the receiver collects
+                // the landed files off the upload response (collectCompleted)
+                // — removing the session here meant landedFiles() found
+                // nothing and single-file transfers never reached the
+                // importer (the silent no-import bug).
+                session.completed = true
+            }
             return LocalSendResponse.status(200)
         }
     }
@@ -258,7 +278,10 @@ class BookDropCore(
 
     // MARK: - Completion
 
-    /** The files that landed, in the order they were received. */
+    /**
+     * The files that landed, in the order they were received. A completed
+     * session stays queryable — use [collectCompleted] to drain it.
+     */
     fun landedFiles(sessionId: String): List<LandedFile> {
         synchronized(lock) {
             val session = sessions[sessionId] ?: return emptyList()
@@ -270,8 +293,23 @@ class BookDropCore(
         }
     }
 
-    private fun complete(session: BookDropSession) {
-        sessions.remove(session.id)
+    /**
+     * Drains a COMPLETED session: returns its landed files and removes the
+     * session bookkeeping (the receiver owns the directory lifecycle — its
+     * sweep deletes the files after the importers consumed them). A session
+     * that is not complete yet, or unknown, drains to nothing.
+     */
+    fun collectCompleted(sessionId: String): List<LandedFile> {
+        synchronized(lock) {
+            val session = sessions[sessionId] ?: return emptyList()
+            if (!session.completed) return emptyList()
+            sessions.remove(sessionId)
+            return session.receivedIds.mapNotNull { fileId ->
+                val meta = session.files[fileId] ?: return@mapNotNull null
+                val file = java.io.File(session.dir, safeFileName(meta.fileName, fileId))
+                if (!file.isFile) null else LandedFile(fileId, meta.fileName, file)
+            }
+        }
     }
 
     /** Called by the router after a file reached its destination. */
@@ -279,21 +317,48 @@ class BookDropCore(
         insertHistory(BookDropRecord(name = name, size = size, outcome = outcome))
     }
 
+    /**
+     * The file name a live session holds for [fileId], or null when no
+     * in-flight session knows it — the progress bar must never name a file
+     * that is not actually transferring.
+     */
+    fun fileNameFor(fileId: String?): String? {
+        if (fileId == null) return null
+        synchronized(lock) {
+            for (session in sessions.values) {
+                session.files[fileId]?.let { return it.fileName }
+            }
+        }
+        return null
+    }
+
     companion object {
         val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
         /**
-         * Extensions accepted — the base set the receiver has always taken,
-         * plus every format the normalize-to-EPUB pipeline handles. iOS's
-         * LocalSendReceiver builds the same union from
-         * SpeechLogic.DocumentBook.supportedExtensions.
+         * Extensions accepted AND landable — the honest accept gate (P0-6).
+         *
+         * Everything here has a landing path on THIS platform:
+         *  - .jex into the notes (the JEX importer),
+         *  - epub/pdf, the audio containers and the office formats into the
+         *    shelf,
+         *  - .wav into Exports, beside the app's own recordings — iOS
+         *    v1.8.1 routing parity,
+         *  - .md/.markdown/.txt/.text as a NOTE — iOS routes a note shared
+         *    from another device to the notes, because the book importer
+         *    would flatten it into a one-chapter EPUB.
+         *
+         * Formats the parsers here cannot read (mobi/azw3/fb2/rtf/html —
+         * iOS accepts them because its readers can land them) and the
+         * containers Android cannot play (opus/ogg/oga) are refused at
+         * prepare-upload time, rather than accepted and then failed one by
+         * one with "could not read".
          */
         val acceptedExtensions: Set<String> = setOf(
             "epub", "pdf", "m4b", "m4a", "mp4", "mp3", "jex",
-            // Opus/Ogg audiobook containers — refusing them read as
-            // "BookDrop skipped my book".
-            "opus", "ogg", "oga",
-        ) + com.speechnotes.app.logic.DocumentBook.supportedExtensions
+            "wav",
+            "md", "markdown", "txt", "text",
+        ) + com.speechnotes.app.logic.DocumentBook.parsedExtensions
 
         fun extension(name: String): String = name.substringAfterLast('.', "").lowercase()
 
@@ -326,4 +391,7 @@ private class BookDropSession(
 ) {
     val receivedIds = LinkedHashSet<String>()
     val tokens: Map<String, String> = files.keys.associateWith { java.util.UUID.randomUUID().toString() }
+    /** Set on the last successful upload; [BookDropCore.collectCompleted] drains it. */
+    @Volatile
+    var completed: Boolean = false
 }

@@ -28,5 +28,11 @@ class SpeechnotesApplication : Application() {
         receiver.router = { file -> BookDropRegistry.routeLanded(file) }
         BookDropRegistry.receiver = receiver
         receiver.applyPersistedEnabledState()
+        // BookDrop sender (v1.8.1 port): one long-lived singleton the send
+        // sheet observes, sharing the receiver's fingerprint.
+        BookDropRegistry.sender = com.speechnotes.app.data.LocalSendSender(this)
+        // Pomodoro (iOS 1.8.x parity): load the persisted session + reconcile
+        // phases that elapsed while the process was dead.
+        com.speechnotes.app.data.PomodoroStore.init(this)
     }
 }

@@ -76,6 +76,10 @@ object Prefs {
     const val BOOK_DROP_ENABLED = "bookDropEnabled"
     const val BOOK_DROP_AUTO_ACCEPT = "bookDropAutoAccept"
     const val BOOK_DROP_FINGERPRINT = "bookDropFingerprint"
+    // The access code the DESTINATION demands — deliberately separate from
+    // any receive-side pin: this device can require a code from others AND
+    // send to a peer whose code differs (iOS BookDropSendView parity).
+    const val BOOK_DROP_SEND_PIN = "bookDropSendPin"
 
     // Reader appearance (ReaderAppearance.swift parity). Booleans that
     // default to TRUE must be stored as "unset | true | false" — a plain

@@ -1,5 +1,6 @@
 package com.speechnotes.app.ui.readalong
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -36,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.speechnotes.app.data.SpeechnotesViewModel
 import com.speechnotes.app.speech.SpeechState
+import com.speechnotes.app.ui.theme.Haptics
 
 
 /**
@@ -120,6 +123,7 @@ fun ReadAlongScreen(
             verticalArrangement = Arrangement.spacedBy((12 * themeState.readerBlockSpacing).dp),
         ) {
             val scale = themeState.previewTextScale
+            val context = LocalContext.current
             for ((start, line) in paragraphs) {
                 val annotated = annotated(line, start, range)
                 Text(
@@ -127,6 +131,14 @@ fun ReadAlongScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     fontSize = (17 * scale).sp,
                     lineHeight = (26 * scale * themeState.readerLineSpacing.toFloat()).sp,
+                    // Tap-a-paragraph-to-speak (iOS ReadAlongView): the tap
+                    // restarts the CURRENT session's text sentence-snapped at
+                    // this paragraph, keeping the note/book identity — the
+                    // book's auto-advance chain stays armed.
+                    modifier = Modifier.clickable {
+                        Haptics.tap(context)
+                        vm.player.playFromCurrent(start)
+                    },
                 )
             }
         }

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -185,6 +186,48 @@ fun StorageSettingsScreen(vm: SpeechnotesViewModel, onBack: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
+            }
+
+            // Exported files (markdown, plain text, PDF, .jex, logs): the
+            // user made these and shared them, so Storage lists them too —
+            // an export that cannot be found again is a lost export.
+            val exportedFiles by vm.exports.files.collectAsState()
+            if (exportedFiles.isNotEmpty()) {
+                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                Text(
+                    "Exported files",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp),
+                )
+                exportedFiles.forEach { item ->
+                    ListItem(
+                        headlineContent = { Text(item.name, maxLines = 1) },
+                        supportingContent = {
+                            Text(
+                                buildString {
+                                    append(item.kind.uppercase())
+                                    append(" · ")
+                                    append(formatBytes(item.bytes))
+                                    append(" · ")
+                                    append(
+                                        java.text.SimpleDateFormat("d MMM, HH:mm", java.util.Locale.getDefault())
+                                            .format(java.util.Date(item.createdAt)),
+                                    )
+                                },
+                            )
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.Description, contentDescription = null)
+                        },
+                        trailingContent = {
+                            IconButton(onClick = { vm.exports.deleteFile(item) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete export")
+                            }
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    )
+                }
             }
 
             // Maintenance: clear partial downloads and share temp files

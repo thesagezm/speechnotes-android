@@ -87,7 +87,15 @@ fun BackupSettingsScreen(vm: SpeechnotesViewModel, onBack: () -> Unit) {
                                 val scopedNotes = vm.notes.notes.value.filter { note ->
                                     note.notebookId in exportScope || exportScope.isEmpty()
                                 }
-                                val file = vm.models.exportJex(scopedNotes, selectedNotebooks)
+                                // iOS JexExporter.fileName parity: the scope
+                                // slug rides in the file name, so a shared
+                                // archive still says what it holds — and the
+                                // date keeps every export instead of
+                                // overwriting the last one.
+                                val suffix = if (exportScope.isEmpty()) "" else {
+                                    com.speechnotes.app.logic.JexExport.scopeSuffix(selectedNotebooks.map { it.name })
+                                }
+                                val file = vm.models.exportJex(scopedNotes, selectedNotebooks, suffix)
                                 if (file != null) vm.models.share(file) else vm.showToast("Export failed")
                             },
                             modifier = Modifier.fillMaxWidth(),

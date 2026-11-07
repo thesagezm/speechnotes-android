@@ -111,6 +111,8 @@ fun NotesListScreen(
     var searchText by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     var showSortMenu by remember { mutableStateOf(false) }
     var fabExpanded by remember { mutableStateOf(false) }
+    // Long-press → "Send with BookDrop" opens the send sheet prefilled.
+    var bookDropSendNote by remember { mutableStateOf<com.speechnotes.app.model.Note?>(null) }
 
     val sort by vm.notesSortOrderFlow.collectAsState()
     val scope by vm.activeNotebookScopeFlow.collectAsState()
@@ -131,6 +133,8 @@ fun NotesListScreen(
     }
 
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
+    // R4: live OCR progress while a PDF import recognizes scanned pages.
+    val noteOcrProgress by vm.noteOcrProgress.collectAsState()
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -172,6 +176,16 @@ fun NotesListScreen(
                     onSelect = { vm.activeNotebookScope = it },
                     onManage = onOpenNotebooks,
                 )
+                // R4: live OCR progress while a PDF import recognizes scanned
+                // pages ("OCR page 3 of 12").
+                noteOcrProgress?.let { (done, total) ->
+                    Text(
+                        "Recognizing scanned pages — $done of $total",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                    )
+                }
             }
         },
         floatingActionButton = {
@@ -229,6 +243,7 @@ fun NotesListScreen(
                                     onFavorite = { vm.notes.setFavorite(!note.isFavorite, note.id) },
                                     onDelete = { vm.deleteNoteWithUndo(note.id) },
                                     onShare = { vm.models.share(noteToFile(vm, note)) },
+                                    onSend = { bookDropSendNote = note },
                                     onMove = { notebookId -> vm.notes.move(note.id, notebookId) },
                                     notebooks = notebooks,
                                 )
@@ -245,6 +260,7 @@ fun NotesListScreen(
                                     onFavorite = { vm.notes.setFavorite(!note.isFavorite, note.id) },
                                     onDelete = { vm.deleteNoteWithUndo(note.id) },
                                     onShare = { vm.models.share(noteToFile(vm, note)) },
+                                    onSend = { bookDropSendNote = note },
                                     onMove = { notebookId -> vm.notes.move(note.id, notebookId) },
                                     notebooks = notebooks,
                                 )
@@ -257,16 +273,23 @@ fun NotesListScreen(
     }
 
     // Import text files into notes (iOS ImportService parity): txt / md / pdf
-    // pick a note text from the system file picker.
+    // pick a note text from the system file picker. PDFs run the native-text
+    // + ML Kit OCR walk (R4) — scanned pages are recognized into editable
+    // note text with progress shown in the top bar (vm.noteOcrProgress).
     val fileImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
             vm.appScope.launch {
-                val imported = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { vm.models.importTextFrom(uri) }
+                val imported = vm.importNoteFrom(uri)
                 if (imported != null) {
-                    val added = vm.addNoteFromText(imported.second)
+                    val added = vm.addNoteFromText(imported.text)
                     if (!added) Unit
+                    if (imported.ocrPages > 0) {
+                        vm.showToast("Recognized ${imported.ocrPages} scanned page(s) into \"${imported.name}\".")
+                    } else if (imported.text.isBlank()) {
+                        vm.showToast("That file had no readable text.")
+                    }
                 } else {
                     vm.showToast("Couldn't read that file.")
                 }
@@ -298,6 +321,14 @@ fun NotesListScreen(
                 )
             }
         }
+    }
+
+    bookDropSendNote?.let { note ->
+        com.speechnotes.app.ui.settings.BookDropSendSheet(
+            vm = vm,
+            prefillNoteId = note.id,
+            onDismiss = { bookDropSendNote = null },
+        )
     }
 }
 
@@ -440,6 +471,7 @@ private fun NoteCard(
     onFavorite: () -> Unit,
     onDelete: () -> Unit,
     onShare: () -> Unit,
+    onSend: () -> Unit = {},
     onMove: (String?) -> Unit = {},
     notebooks: List<com.speechnotes.app.model.Notebook> = emptyList(),
 ) {
@@ -541,6 +573,10 @@ private fun NoteCard(
         }
         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
             DropdownMenuItem(
+                text = { Text("Send with BookDrop") },
+                onClick = { showMenu = false; onSend() },
+            )
+            DropdownMenuItem(
                 text = { Text(if (note.isPinned) "Unpin" else "Pin") },
                 onClick = { showMenu = false; onPin() },
             )
@@ -614,10 +650,25 @@ private fun EmptySearchState(query: String) {
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            "No results for \"$query\"",
-            style = MaterialTheme.typography.titleMedium,
-        )
+        if (query.isNotBlank()) {
+            Text(
+                "No results for \"$query\"",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        } else {
+            // A scope (notebook/recycle view) with no notes must not render
+            // the search-failure copy with an empty query.
+            Text(
+                "Nothing here yet",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Notes you add to this view show up here.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

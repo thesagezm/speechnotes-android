@@ -1,4 +1,4 @@
-package com.speechnotes.app.ui.settings
+package com.speechnotes.app.ui.stats
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,7 +18,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Notes
 import androidx.compose.material3.Button
@@ -30,6 +33,7 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -37,6 +41,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -52,7 +57,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
@@ -63,24 +71,38 @@ import com.speechnotes.app.model.Book
 import com.speechnotes.app.model.GoalMath
 import com.speechnotes.app.model.GoalProgress
 import com.speechnotes.app.model.ReadingGoal
+import com.speechnotes.app.ui.settings.SettingsCard
+import com.speechnotes.app.ui.settings.formatHours
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
 
 /**
- * Stats & goals subpage — iOS StatsTabView parity: goals live at the top
- * regardless of data, three header cards (Today / Streak / range total), a
- * Week/Month/Year range picker driving grouped reading-vs-listening bars
- * (week daily, month scrollable daily, year monthly), the Mon-first
- * 18-week heatmap and a top-8 Subjects card with per-book progress.
- * The pollers (60 s stats reload, 5 s goals refresh) only run while this
- * page is open.
+ * The Stats TAB (iOS StatsTabView parity) — promoted out of Settings. Goals
+ * live at the top regardless of data, then a Today hero (large hours
+ * headline + streak chip), three range header cards, a Week/Month/Year
+ * picker driving grouped reading-vs-listening bars, the Mon-first 18-week
+ * heatmap and the top-8 Subjects card with per-book progress. The pollers
+ * (60 s stats reload, 5 s goals refresh) only run while the tab is shown.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StatsScreen(vm: SpeechnotesViewModel, onBack: () -> Unit) {
-    SettingsSubpage(title = "Stats & goals", onBack = onBack) {
-        StatsBody(vm)
+fun StatsTabScreen(vm: SpeechnotesViewModel) {
+    Scaffold(
+        topBar = {
+            TopAppBar(title = { Text("Stats") })
+        },
+    ) { padding ->
+        Column(
+            Modifier
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+        ) {
+            StatsBody(vm)
+            Spacer(Modifier.height(24.dp))
+        }
     }
 }
 
@@ -99,8 +121,8 @@ private data class Bucket(
 
 @Composable
 private fun StatsBody(vm: SpeechnotesViewModel) {
-    // Reload whenever this card recomposes after a resume: keys on the
-    // current minute so an open settings screen refreshes too.
+    // Reload whenever this tab recomposes after a resume: keys on the
+    // current minute so a long-open tab refreshes too.
     var reloadKey by remember { mutableIntStateOf(0) }
     LaunchedEffect(Unit) {
         kotlinx.coroutines.delay(60_000)
@@ -116,6 +138,7 @@ private fun StatsBody(vm: SpeechnotesViewModel) {
     var streak by remember { mutableIntStateOf(0) }
     var hasAnyData by remember { mutableStateOf(false) }
     var rangeTotal by remember { mutableDoubleStateOf(0.0) }
+    var bestDay by remember { mutableDoubleStateOf(0.0) }
     var buckets by remember { mutableStateOf<List<Bucket>>(emptyList()) }
     var heatmap by remember { mutableStateOf<Map<String, StatsStore.DayTotals>>(emptyMap()) }
     var subjects by remember { mutableStateOf<List<Pair<String, Double>>>(emptyList()) }
@@ -131,6 +154,7 @@ private fun StatsBody(vm: SpeechnotesViewModel) {
         rangeTotal = days.entries
             .filter { it.key >= LocalDate.now().minusDays((range.daysBack - 1).toLong()).format(dayKeyFormat) }
             .sumOf { it.value.total }
+        bestDay = days.values.maxOfOrNull { it.total } ?: 0.0
         buckets = when (range) {
             StatsRange.WEEK -> dayBuckets(7, days)
             StatsRange.MONTH -> dayBuckets(30, days)
@@ -146,72 +170,152 @@ private fun StatsBody(vm: SpeechnotesViewModel) {
     }
 
     // Goals first (iOS parity: a fresh install can set a goal before the
-    // charts have anything to chart).
+    // charts have anything to chart), then the Pomodoro section directly
+    // under it (iOS StatsTabView's PomodoroCard placement).
     SettingsCard("Reading goals") {
         GoalsSection(vm)
     }
 
+    Spacer(Modifier.height(12.dp))
+    SettingsCard("Pomodoro") {
+        PomodoroCard()
+    }
+
     if (!hasAnyData) {
         SettingsCard("Stats") {
-            Column(
-                Modifier.fillMaxWidth().padding(vertical = 28.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Icon(
-                    Icons.Default.MenuBook,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text("No statistics yet", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Time you spend reading books and listening shows up here.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
-            }
+            EmptyStats()
         }
         return
     }
 
-    SettingsCard("Stats") {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            HeaderCard("Today", formatHours(today), Modifier.weight(1f))
-            HeaderCard("Streak", if (streak > 0) "$streak day${if (streak == 1) "" else "s"}" else "—", Modifier.weight(1f))
-            HeaderCard(range.label, formatHours(rangeTotal), Modifier.weight(1f))
+    // Today hero: the day's number is the headline of the tab, with the
+    // streak riding beside it instead of hiding in a small card.
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 8.dp, top = 20.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "Today",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                formatHours(today),
+                style = MaterialTheme.typography.displaySmall,
+                fontWeight = FontWeight.Bold,
+            )
         }
+        StreakChip(streak)
+    }
 
-        Spacer(Modifier.height(12.dp))
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            StatsRange.entries.forEachIndexed { index, option ->
-                SegmentedButton(
-                    selected = range == option,
-                    onClick = { range = option },
-                    shape = SegmentedButtonDefaults.itemShape(index, StatsRange.entries.size),
-                    label = { Text(option.label) },
-                )
-            }
-        }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        HeaderCard("${range.label} total", formatHours(rangeTotal), Modifier.weight(1f))
+        HeaderCard("Best day", formatHours(bestDay), Modifier.weight(1f))
+    }
 
-        Spacer(Modifier.height(12.dp))
-        Text("Activity", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(12.dp))
+    SettingsCard("Activity") {
+        RangePicker(range) { range = it }
+        Spacer(Modifier.height(14.dp))
         ActivityBars(buckets)
         Spacer(Modifier.height(8.dp))
         LegendRow()
-        Spacer(Modifier.height(4.dp))
-
-        HorizontalCardDivider()
+        Spacer(Modifier.height(10.dp))
+        androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(Modifier.height(10.dp))
         Text("Last 18 weeks", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
         StatsHeatmap(heatmap)
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(6.dp))
+    }
 
-        HorizontalCardDivider()
-        Text("Subjects", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(12.dp))
+    SettingsCard("Subjects") {
         SubjectsCard(vm, subjects)
+    }
+}
+
+@Composable
+private fun StreakChip(streak: Int) {
+    val color = if (streak > 0) Color(0xFFC9A227) else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                Icons.Default.LocalFireDepartment,
+                contentDescription = null,
+                tint = color,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                if (streak > 0) "$streak day${if (streak == 1) "" else "s"}" else "—",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyStats() {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 32.dp, horizontal = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier
+                .size(64.dp)
+                .background(
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                    CircleShape,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Default.Insights,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(30.dp),
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        Text("Nothing to chart yet", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Read a book or listen to a note — your time shows up here.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun RangePicker(range: StatsRange, onSelect: (StatsRange) -> Unit) {
+    val haptics = LocalHapticFeedback.current
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+        StatsRange.entries.forEachIndexed { index, option ->
+            SegmentedButton(
+                selected = range == option,
+                onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.ToggleOn)
+                    onSelect(option)
+                },
+                shape = SegmentedButtonDefaults.itemShape(index, StatsRange.entries.size),
+                label = { Text(option.label) },
+            )
+        }
     }
 }
 
@@ -222,23 +326,20 @@ private fun HeaderCard(label: String, value: String, modifier: Modifier = Modifi
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = modifier,
     ) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-            Text(value, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                value,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
             Text(
                 label,
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
-}
-
-@Composable
-private fun HorizontalCardDivider() {
-    androidx.compose.material3.HorizontalDivider(
-        Modifier.padding(vertical = 10.dp),
-        color = MaterialTheme.colorScheme.outlineVariant,
-    )
 }
 
 /** Day buckets for the last [count] days, oldest first (week/month chart). */

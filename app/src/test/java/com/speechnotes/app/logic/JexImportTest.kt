@@ -7,6 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.nio.file.Files
 
 /** Round-trip + parser tests for the Joplin JEX path (iOS v1.8.1 semantics). */
 class JexImportTest {
@@ -282,7 +283,7 @@ class JexImportTest {
 class NoteImageStoreTest {
 
     private fun initRoot(): File {
-        val root = createTempDirectory("note-images-test").toFile()
+        val root = Files.createTempDirectory("note-images-test").toFile()
         AppFiles.init(root)
         return root
     }

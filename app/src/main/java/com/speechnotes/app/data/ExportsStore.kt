@@ -22,6 +22,22 @@ data class ExportedAudio(
 )
 
 /**
+ * One exported NON-audio file (markdown, plain text, PDF, .jex, logs).
+ * The WAV list has its own player UI; these are files the user made and
+ * shared, so Storage lists them too — an export the user cannot see is an
+ * export they cannot find again.
+ */
+data class ExportedFile(
+    val url: File,
+    val name: String,
+    val bytes: Long,
+    val createdAt: Long,
+) {
+    /** "md" / "pdf" / "jex" — the file extension, lowercased. */
+    val kind: String get() = url.extension.lowercase()
+}
+
+/**
  * Exported-audio listing — port of ExportsStore.swift. Reads the exports
  * directory; the player sees it through [com.speechnotes.app.speech.WavPlayer].
  */
@@ -30,14 +46,18 @@ class ExportsStore {
     private val _exports = MutableStateFlow<List<ExportedAudio>>(emptyList())
     val exports: StateFlow<List<ExportedAudio>> = _exports.asStateFlow()
 
+    private val _files = MutableStateFlow<List<ExportedFile>>(emptyList())
+    val files: StateFlow<List<ExportedFile>> = _files.asStateFlow()
+
     val totalBytes: Long
         get() = _exports.value.sumOf { it.bytes }
 
     /** Re-reads the exports directory (called on appear + pull-to-refresh). */
     fun refresh() {
         val dir = AppFiles.exportsDir
-        val list = dir.listFiles { f -> f.isFile && f.extension.lowercase() == "wav" }
-            ?.map { file ->
+        val all: List<File> = dir.listFiles { f -> f.isFile }?.toList() ?: emptyList()
+        _exports.value = all.filter { it.extension.lowercase() == "wav" }
+            .map { file ->
                 ExportedAudio(
                     url = file,
                     name = file.nameWithoutExtension,
@@ -45,12 +65,29 @@ class ExportsStore {
                     createdAt = file.lastModified(),
                 )
             }
-            ?.sortedByDescending { it.createdAt }
-            ?: emptyList()
-        _exports.value = list
+            .sortedByDescending { it.createdAt }
+        // Everything the user exported that is not audio — markdown, text,
+        // PDF, .jex, the logs dump. These are user files, so they are
+        // listed (and protected) exactly like the WAVs.
+        _files.value = all.filter { it.extension.lowercase() != "wav" }
+            .map { file ->
+                ExportedFile(
+                    url = file,
+                    name = file.name,
+                    bytes = file.length(),
+                    createdAt = file.lastModified(),
+                )
+            }
+            .sortedByDescending { it.createdAt }
     }
 
     fun delete(item: ExportedAudio) {
+        runCatching { item.url.delete() }
+        refresh()
+    }
+
+    /** Deletes one non-audio export (markdown / PDF / .jex / logs). */
+    fun deleteFile(item: ExportedFile) {
         runCatching { item.url.delete() }
         refresh()
     }
@@ -70,18 +107,22 @@ class ExportsStore {
             if (!dir.exists()) 0 else dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 
         /**
-         * Partial downloads / caches are "temporary": a half-written .part
-         * file, a .tmp write, and the .jex archive are all safe to drop.
-         * Exported WAVs and book files are NOT — user content.
+         * Drops what is genuinely temporary — a half-written model download
+         * (`.part`) and the `.tmp` files of interrupted atomic writes.
+         *
+         * Exported files are NOT temporary: the .jex archives, note PDFs,
+         * markdown/text exports and the logs dump are things the user made
+         * and shared, and iOS protects them the same way ("Books, notes,
+         * exports and models are not touched"). Deleting a user's export
+         * from under a "clear temporary files" tap was a data-loss bug.
          */
         fun clearTemporaryFiles(): Long {
             var freed = 0L
-            AppFiles.exportsDir.listFiles()?.forEach { f ->
-                if (!f.isFile) return@forEach
+            val root = AppFiles.root
+            if (!root.exists()) return 0
+            root.walkTopDown().filter { it.isFile }.forEach { f ->
                 val ext = f.extension.lowercase()
-                val isTemp = ext == "part" || ext == "tmp" || f.name.endsWith(".jex") || f.name.endsWith(".pdf") ||
-                    f.name.endsWith(".md") || f.name.endsWith(".txt")
-                if (isTemp) {
+                if (ext == "part" || ext == "tmp") {
                     freed += f.length()
                     runCatching { f.delete() }
                 }

@@ -190,4 +190,28 @@ object JexExport {
 
     /** Joplin ids are 32 lowercase hex; a UUID's dashes stripped satisfies it. */
     fun joplinId(uuid: String): String = uuid.replace("-", "").lowercase()
+
+    /**
+     * Archive file name — iOS `JexExporter.fileName(scopeSuffix:)` parity:
+     * `speechnotes<scopeSuffix>-<yyyy-MM-dd>.jex`.
+     *
+     * The scope suffix is "", "-<notebook-slug>" or "-unfiled". The DATE is
+     * part of the name on purpose: a fixed name made every backup silently
+     * replace the previous one, so the user could never keep two.
+     */
+    fun fileName(scopeSuffix: String = "", date: java.time.LocalDate = java.time.LocalDate.now()): String =
+        "speechnotes$scopeSuffix-${date.format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)}.jex"
+
+    /**
+     * The slug iOS puts between "speechnotes" and the date: the first
+     * selected notebook's name, lowercased, spaces to dashes, and stripped
+     * of everything that is not a letter, a digit or a dash.
+     */
+    fun scopeSuffix(notebookNames: List<String>): String {
+        val first = notebookNames.firstOrNull() ?: return "-notebooks"
+        val slug = first.lowercase()
+            .replace(" ", "-")
+            .filter { it.isLetterOrDigit() || it == '-' }
+        return if (slug.isEmpty()) "-notebooks" else "-$slug"
+    }
 }

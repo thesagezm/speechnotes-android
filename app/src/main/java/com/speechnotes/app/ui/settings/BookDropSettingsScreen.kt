@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,16 +26,42 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
 import com.speechnotes.app.data.BookDropRegistry
 import com.speechnotes.app.data.Prefs
 import com.speechnotes.app.logic.BookDropRecord
 
 /** BookDrop subpage: nearby-receiving toggle, auto-accept, transfer history. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun BookDropSettingsScreen(onBack: () -> Unit) {
+    var showSendSheet by remember { mutableStateOf(false) }
     SettingsSubpage(title = "BookDrop", onBack = onBack) {
         BookDropCard()
+        SettingsCard("Send") {
+            ListItem(
+                headlineContent = { Text("Send to a device") },
+                supportingContent = { Text("Books, notes, exported audio or a .jex archive — pushed over the local network (LocalSend protocol)") },
+                modifier = Modifier.clickable { showSendSheet = true },
+            )
+        }
     }
+    if (showSendSheet) {
+        BookDropRegistry.sender?.let {
+            // The sheet owns its view model access; the settings page only
+            // opens it bare (no prefill).
+            BookDropSendEntry(onDismiss = { showSendSheet = false })
+        }
+    }
+}
+
+@Composable
+private fun BookDropSendEntry(onDismiss: () -> Unit) {
+    // BookDropSendSheet needs the ViewModel; reach it through the registry
+    // the same way BookDropCard reaches the receiver — the settings screen
+    // is composed under the app's single activity.
+    val vm = androidx.lifecycle.viewmodel.compose.viewModel<com.speechnotes.app.data.SpeechnotesViewModel>(factory = com.speechnotes.app.data.SpeechnotesViewModel.Factory)
+    BookDropSendSheet(vm = vm, onDismiss = onDismiss)
 }
 
 @Composable
@@ -45,6 +72,7 @@ private fun BookDropCard() {
     val port by receiver.port.collectAsState()
     val lastError by receiver.lastError.collectAsState()
     val history by receiver.history.collectAsState()
+    val incoming by receiver.incomingTransfer.collectAsState()
 
     // The persisted toggle is the source of truth (iOS @AppStorage parity);
     // flips write through and start/stop the server immediately.
@@ -87,6 +115,38 @@ private fun BookDropCard() {
                         .edit().putBoolean(Prefs.BOOK_DROP_AUTO_ACCEPT, to).apply()
                 },
             )
+            // The file currently streaming IN — name + throttled byte bar
+            // (iOS BookDropView's Receiving section, dbc0677 parity).
+            incoming?.let { transfer ->
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Text("Receiving…", style = MaterialTheme.typography.labelMedium)
+                    val fraction = transfer.fraction
+                    if (fraction != null) {
+                        androidx.compose.material3.LinearProgressIndicator(
+                            progress = { fraction.toFloat() },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    Row {
+                        Text(
+                            transfer.fileName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        fraction?.let {
+                            Text(
+                                "${(it * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
             lastError?.let { error ->
                 Text(
                     error,

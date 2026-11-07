@@ -4,6 +4,7 @@ import android.content.Context
 import com.speechnotes.app.logic.AppFiles
 import com.speechnotes.app.logic.BookDropCore
 import com.speechnotes.app.logic.BookDropRecord
+import com.speechnotes.app.logic.IncomingTransfer
 import com.speechnotes.app.logic.LocalSendDevice
 import com.speechnotes.app.logic.LocalSendHTTPServer
 import com.speechnotes.app.logic.LocalSendRequest
@@ -68,9 +69,40 @@ class LocalSendReceiver(private val context: Context) {
     private val _history = MutableStateFlow<List<BookDropRecord>>(emptyList())
     val history: StateFlow<List<BookDropRecord>> = _history.asStateFlow()
 
+    /**
+     * The file currently streaming in (null when nothing does) — the
+     * BookDrop screen's "how much has arrived" bar.
+     */
+    private val _incomingTransfer = MutableStateFlow<IncomingTransfer?>(null)
+    val incomingTransfer: StateFlow<IncomingTransfer?> = _incomingTransfer.asStateFlow()
+
     init {
         server.handler = { request -> handle(request) }
         server.bodySpillDir = AppFiles.bookDropIncomingDir
+        // Progress callbacks arrive on the connection thread (throttled by
+        // the server's per-request reporter); MutableStateFlow is
+        // thread-safe, so no hop is needed.
+        server.bodyProgress = { path, query, received, expected ->
+            if (path == "/api/localsend/v2/upload") {
+                noteIncomingProgress(query["fileId"], received, expected)
+            }
+        }
+    }
+
+    /**
+     * Body-progress callback from the server: the file with `fileId` moved
+     * `received` of `expected` bytes. `received == -1` is the server's "the
+     * peer hung up mid-body" marker. A fileId no live session knows is
+     * ignored — a bar must never name a file that is not actually
+     * transferring.
+     */
+    private fun noteIncomingProgress(fileId: String?, received: Long, expected: Long) {
+        if (received < 0) {
+            _incomingTransfer.value = null
+            return
+        }
+        val name = core.fileNameFor(fileId) ?: return
+        _incomingTransfer.value = IncomingTransfer(fileName = name, received = received, total = expected)
     }
 
     // MARK: - Identity (persisted)
@@ -120,6 +152,7 @@ class LocalSendReceiver(private val context: Context) {
         server.stop()
         _isRunning.value = false
         _port.value = 0
+        _incomingTransfer.value = null
     }
 
     /** The didBecomeActive rule: probe, and stop-then-start on a dead listener. */
@@ -150,6 +183,7 @@ class LocalSendReceiver(private val context: Context) {
             "/api/localsend/v2/prepare-upload" -> {
                 val body = request.bodySource as? LocalSendRequest.Body.Memory
                     ?: return LocalSendResponse.badRequest()
+                _incomingTransfer.value = null // a fresh session starts with a clean bar
                 core.prepareUpload(String(body.data), request.remoteHost)
             }
             "/api/localsend/v2/upload" -> {
@@ -164,10 +198,16 @@ class LocalSendReceiver(private val context: Context) {
                     remoteHost = request.remoteHost,
                     body = body,
                 )
+                // The body has fully arrived by the time this runs: whatever
+                // the validation finds, the streaming bar's job is done.
+                _incomingTransfer.value = null
                 if (response.status == 200) routeLanded(request.queryValue("sessionId"))
                 response
             }
-            "/api/localsend/v2/cancel" -> core.cancel(request.queryValue("sessionId"))
+            "/api/localsend/v2/cancel" -> {
+                _incomingTransfer.value = null
+                core.cancel(request.queryValue("sessionId"))
+            }
             else -> LocalSendResponse.notFound()
         }
     }
@@ -178,7 +218,10 @@ class LocalSendReceiver(private val context: Context) {
      */
     private fun routeLanded(sessionId: String?) {
         if (sessionId == null) return
-        val landed = core.landedFiles(sessionId)
+        // Drain the completed session (removes its bookkeeping); an
+        // in-progress multi-file transfer drains to nothing until the last
+        // file's upload response.
+        val landed = core.collectCompleted(sessionId)
         if (landed.isEmpty()) return
         val router = router ?: return
         scope.launch {

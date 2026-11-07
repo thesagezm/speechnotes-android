@@ -18,6 +18,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -56,6 +57,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -390,6 +392,17 @@ fun NoteEditorScreen(
                 return@launch
             }
             insertMarkdownAtCaret(com.speechnotes.app.logic.NoteImageStore.markdownFor(target))
+            // R4: an image imported into a note is also READ — run ML Kit
+            // text recognition over it and land the text under the image so
+            // TTS reads it like any note (iOS ImportService parity).
+            // Failures surface as a toast; nothing is swallowed silently.
+            val recognized = runCatching { vm.recognizeImageText(bytes) }.getOrNull()
+            if (recognized != null) {
+                insertMarkdownAtCaret("\n$recognized")
+                vm.showToast("Recognized text from the image.")
+            } else {
+                vm.showToast("No text recognized in that image.")
+            }
         }
     }
 
@@ -506,6 +519,11 @@ fun NoteEditorScreen(
     val exportState by vm.player.exportState.collectAsState()
     val exportShareFile by vm.player.shareFile.collectAsState()
     val isThisNotePlaying = vm.player.nowPlayingNoteId.collectAsState().value == noteId
+    // Landscape moves the transport to the trailing rail (iOS PlaybackRail);
+    // the bottom bar yields.
+    val landscape = com.speechnotes.app.ui.playback.isLandscape()
+    val playProgress by vm.player.progress.collectAsState()
+    val playRate by vm.player.rateMultiplier.collectAsState()
 
     // WAV export feedback (iOS parity): a toast on failure, a share prompt
     // when the file lands. The flows existed but nothing observed them, so
@@ -538,6 +556,17 @@ fun NoteEditorScreen(
     val chromeHidden = immersiveChromeHidden && (showReadAlong || (renderMarkdown && showPreview))
     // Entering edit mode restores the chrome deterministically.
     if (!showReadAlong && !showPreview && immersiveChromeHidden) immersiveChromeHidden = false
+    // Keep Screen On (iOS ScreenAwake parity): the editor holds the screen
+    // only while it is READING (preview / read-along) — never in edit mode,
+    // where the software keyboard already keeps it awake.
+    if (com.speechnotes.app.logic.ScreenAwakePolicy.noteIsReadingSurface(
+            renderMarkdown = renderMarkdown, showPreview = showPreview, readAlongShowing = showReadAlong,
+        )
+    ) {
+        com.speechnotes.app.ui.playback.KeepScreenOnSurface(
+            com.speechnotes.app.logic.ScreenAwakeSurface.NOTE_READER,
+        )
+    }
 
     LaunchedEffect(noteId) {
         if (!loaded && note != null) {
@@ -696,9 +725,48 @@ fun NoteEditorScreen(
                             .widthIn(max = 132.dp)
                             .padding(start = 8.dp),
                     )
-                    IconButton(onClick = {
-                        vm.player.togglePlay(computeSpeechText(draft.text, rendersForSpeech), note)
-                    }, enabled = playerState != SpeechState.IDLE || cachedSpeechText.isNotBlank()) {
+                    // Edit/Preview toggle (iOS NoteEditorView toolbar model):
+                    // the preview was reachable but never escapable — a
+                    // visible toggle in the chrome is the way back.
+                    if (renderMarkdown) {
+                        IconButton(onClick = {
+                            com.speechnotes.app.ui.theme.Haptics.tap(vm.context)
+                            showPreview = !showPreview
+                        }) {
+                            Icon(
+                                if (showPreview) Icons.Default.Edit else Icons.Default.Visibility,
+                                contentDescription = if (showPreview) "Edit note" else "Preview markdown",
+                            )
+                        }
+                    }
+                    // Speak: tap toggles play/pause; LONG-PRESS starts reading
+                    // from the caret (R3 playFrom — the "start reading here"
+                    // primitive; with a selection active the selection start is
+                    // used). Sentence-snapped by the player, so the caret may
+                    // sit mid-word.
+                    val speechCanPlay = playerState != SpeechState.IDLE || cachedSpeechText.isNotBlank()
+                    Box(
+                        Modifier
+                            .size(48.dp)
+                            .combinedClickable(
+                                enabled = speechCanPlay,
+                                onClick = {
+                                    vm.player.togglePlay(computeSpeechText(draft.text, rendersForSpeech), note)
+                                },
+                                onLongClick = {
+                                    com.speechnotes.app.ui.theme.Haptics.tap(vm.context)
+                                    val caret = selectionUTF16?.first
+                                        ?: draft.selection.start.coerceAtMost(draft.text.length)
+                                    vm.player.playFrom(
+                                        computeSpeechText(draft.text, rendersForSpeech),
+                                        caret,
+                                        noteId = note?.id,
+                                        noteTitle = note?.title,
+                                    )
+                                },
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         // The icon tracks the player state: a static
                         // PlayArrow read as "the tap didn't register" while
                         // the engine was still loading.
@@ -753,33 +821,42 @@ fun NoteEditorScreen(
                             },
                         )
                     }
-                PlayerControlsBar(
-                    vm = vm,
-                    speechTextProvider = { computeSpeechText(draft.text, rendersForSpeech) },
-                    note = note,
-                    readAlongEnabled = readAlongEnabled,
-                    onReadAlongToggle = { vm.readAlongEnabled = !vm.readAlongEnabled },
-                    onOpenVoicePicker = { showVoicePicker = true },
-                    onRestartFromBeginning = { vm.player.clearResumeBookmark(noteId) },
-                )
+                if (!landscape) {
+                    PlayerControlsBar(
+                        vm = vm,
+                        speechTextProvider = { computeSpeechText(draft.text, rendersForSpeech) },
+                        note = note,
+                        readAlongEnabled = readAlongEnabled,
+                        onReadAlongToggle = { vm.readAlongEnabled = !vm.readAlongEnabled },
+                        onOpenVoicePicker = { showVoicePicker = true },
+                        onRestartFromBeginning = { vm.player.clearResumeBookmark(noteId) },
+                    )
+                }
             }
         },
     ) { padding ->
-        Box(
+        // Landscape: the reading body keeps the leading side and the playback
+        // rail owns the trailing edge (iOS PlaybackRail layout).
+        Row(
             Modifier
                 .padding(padding)
-                .then(
-                    if (showReadAlong || (renderMarkdown && showPreview)) {
-                        Modifier.pointerInput(Unit) {
-                            detectTapGestures(
-                                onTap = { immersiveChromeHidden = !immersiveChromeHidden },
-                            )
-                        }
-                    } else {
-                        Modifier
-                    },
-                ),
+                .fillMaxSize(),
         ) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .then(
+                        if (showReadAlong || (renderMarkdown && showPreview)) {
+                            Modifier.pointerInput(Unit) {
+                                detectTapGestures(
+                                    onTap = { immersiveChromeHidden = !immersiveChromeHidden },
+                                )
+                            }
+                        } else {
+                            Modifier
+                        },
+                    ),
+            ) {
             if (renderMarkdown && showPreview) {
                 MarkdownPreview(
                     draft.text,
@@ -800,6 +877,24 @@ fun NoteEditorScreen(
                         selectionUTF16 = newValue.selection.start..newValue.selection.end
                     },
                     onSlashRequest = { showSlashMenu = !showSlashMenu },
+                )
+            }
+            }
+            if (landscape) {
+                com.speechnotes.app.ui.playback.PlaybackRail(
+                    vm = vm,
+                    progress = playProgress,
+                    isGenerating = playerState == SpeechState.GENERATING,
+                    isSpeaking = playerState == SpeechState.SPEAKING,
+                    isPlayEnabled = playerState != SpeechState.IDLE || cachedSpeechText.isNotBlank(),
+                    onTogglePlay = { vm.player.togglePlay(computeSpeechText(draft.text, rendersForSpeech), note) },
+                    onStop = { vm.player.stop() },
+                    voiceLabel = vm.player.currentVoiceDescription,
+                    onChangeVoice = { showVoicePicker = true },
+                    readAlongOn = readAlongEnabled,
+                    onToggleReadAlong = { vm.readAlongEnabled = !vm.readAlongEnabled },
+                    rate = playRate,
+                    onRateChange = { vm.player.setRateMultiplier(it) },
                 )
             }
         }
@@ -835,14 +930,16 @@ fun NoteEditorScreen(
             text = {
                 Column {
                     ShareOption("Markdown") {
-                        val file = File(com.speechnotes.app.logic.AppFiles.exportsDir, "note.md")
+                        val stem = exportSafeName(note?.title?.ifBlank { "note" } ?: "note", 40)
+                        val file = File(com.speechnotes.app.logic.AppFiles.exportsDir, "$stem.md")
                         file.parentFile?.mkdirs()
                         file.writeText(draft.text)
                         vm.models.share(file)
                         showShareMenu = false
                     }
                     ShareOption("Plain text") {
-                        val file = File(com.speechnotes.app.logic.AppFiles.exportsDir, "note.txt")
+                        val stem = exportSafeName(note?.title?.ifBlank { "note" } ?: "note", 40)
+                        val file = File(com.speechnotes.app.logic.AppFiles.exportsDir, "$stem.txt")
                         file.parentFile?.mkdirs()
                         file.writeText(com.speechnotes.app.logic.MarkdownText.plainText(draft.text))
                         vm.models.share(file)
@@ -877,14 +974,23 @@ fun NoteEditorScreen(
 }
 
 /**
+ * File-name stem for a note export: the title, stripped of anything that
+ * is not safe in a path, capped, and never empty. Every export of a note
+ * (markdown, text, PDF) uses this stem — a fixed "note.md" made each
+ * export overwrite the previous one.
+ */
+private fun exportSafeName(title: String, maxLength: Int = 60): String =
+    title.map { ch ->
+        if (ch.isLetterOrDigit() || ch == '-' || ch == '_') ch else '_'
+    }.joinToString("").trim('_').take(maxLength).ifEmpty { "note" }
+
+/**
  * Renders the note's markdown into a paged PDF in the exports directory,
  * named after the note (iOS safeFilename parity). [markdown] is the raw
  * draft; NotePdfLayout lays out the blocks and this adapter draws them.
  */
 private fun renderNotePdf(title: String, markdown: String): File? = runCatching {
-    val safeName = title.map { ch ->
-        if (ch.isLetterOrDigit() || ch == '-' || ch == '_') ch else '_'
-    }.joinToString("").trim('_').take(60).ifEmpty { "note" }
+    val safeName = exportSafeName(title)
     val file = File(com.speechnotes.app.logic.AppFiles.exportsDir, "$safeName.pdf")
         .apply { parentFile?.mkdirs() }
     val blocks = com.speechnotes.app.logic.MarkdownText.blocks(markdown)
