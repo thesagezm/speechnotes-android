@@ -199,6 +199,22 @@ class SupertonicEngine : SpeechEngine {
     fun release() = core.release()
 
     /**
+     * Retires the engine for good: the four ONNX sessions are closed ON the
+     * generate queue (before the queue dies, so the native memory is really
+     * released) and the queue is shut down.
+     */
+    fun shutdown() {
+        core.prewarmAndWait {
+            clearSessions()
+            indexer = LongArray(0)
+            styles = HashMap()
+            modelLoadAttempted = false
+        }
+        core.release()
+        LogStore.info("SupertonicEngine: engine retired (sessions closed, queue shut down)")
+    }
+
+    /**
      * Drops the four resident ONNX sessions (iOS idle-unload parity:
      * SpeechPlayer.swift:694,717 — sessions dropped after 5 min idle). Runs
      * on the generate queue via prewarm; the next speak() reloads from disk.
@@ -383,17 +399,19 @@ class SupertonicEngine : SpeechEngine {
 
                     // 4) flow-matching denoise loop, current_step = step index.
                     for (step in 0 until totalStep) {
-                        stepTensor = floatTensor(env, floatArrayOf(step.toFloat()), longArrayOf(1))
+                        val stepT = floatTensor(env, floatArrayOf(step.toFloat()), longArrayOf(1))
+                        stepTensor = stepT
                         val inputs = HashMap<String, OnnxTensor>()
-                        inputs["noisy_latent"] = noisyTensor!!
-                        inputs["text_emb"] = embTensor!!
-                        inputs["style_ttl"] = ttlTensor!!
-                        inputs["latent_mask"] = latentMaskTensor!!
-                        inputs["text_mask"] = maskTensor!!
-                        inputs["current_step"] = stepTensor!!
-                        inputs["total_step"] = totalTensor!!
-                        result = ve.run(inputs)
-                        val denoised = result!!.get("denoised_latent").orElse(null) as? OnnxTensor ?: error("no denoised_latent")
+                        inputs["noisy_latent"] = noisyTensor ?: error("no noisy_latent")
+                        inputs["text_emb"] = embTensor ?: error("no text_emb tensor")
+                        inputs["style_ttl"] = ttlTensor ?: error("no style_ttl tensor")
+                        inputs["latent_mask"] = latentMaskTensor ?: error("no latent_mask tensor")
+                        inputs["text_mask"] = maskTensor ?: error("no text_mask tensor")
+                        inputs["current_step"] = stepT
+                        inputs["total_step"] = totalTensor ?: error("no total_step tensor")
+                        val stepResult = ve.run(inputs)
+                        result = stepResult
+                        val denoised = stepResult.get("denoised_latent").orElse(null) as? OnnxTensor ?: error("no denoised_latent")
                         val flat = floatsOf(denoised, "denoised_latent")
                         runCatching { result?.close() }
                         result = null
@@ -405,7 +423,8 @@ class SupertonicEngine : SpeechEngine {
 
                     // 5) vocoder → waveform, trimmed to the predicted duration.
                     latentTensor = noisyTensor
-                    vo.run(mapOf("latent" to latentTensor!!)).use { vocOut ->
+                    val latent = latentTensor ?: error("no latent tensor")
+                    vo.run(mapOf("latent" to latent)).use { vocOut ->
                         val wav = floatsOf(vocOut, "wav_tts")
                         // The vocoder emits whole 3072-sample chunks, so it can
                         // come back SHORTER than the predicted duration (the

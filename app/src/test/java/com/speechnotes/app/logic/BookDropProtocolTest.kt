@@ -287,6 +287,86 @@ class BookDropProtocolTest {
         assertEquals("1 of 2 files", history[0].name)
     }
 
+    // MARK: - the receive-side access code (iOS v1.8.1 parity)
+
+    /** A prepare body with the given pin (null = no pin field value). */
+    private fun prepareBody(fileName: String = "book.epub", pin: String? = null): String {
+        val pinJson = if (pin == null) "null" else "\"$pin\""
+        return """{"info":{"alias":"PC","version":"2.2","fingerprint":"p","port":1,"protocol":"http"},"pin":$pinJson,"files":{"a":{"id":"a","fileName":"$fileName","size":5,"sha256":null}}}"""
+    }
+
+    @Test
+    fun prepare_upload_without_a_code_is_401_when_a_code_is_required() {
+        val c = core().also { it.requiredPin = "1844" }
+        assertEquals(401, c.prepareUpload(prepareBody(), senderHost = "h").status)
+    }
+
+    @Test
+    fun prepare_upload_with_the_wrong_code_is_401() {
+        val c = core().also { it.requiredPin = "1844" }
+        assertEquals(401, c.prepareUpload(prepareBody(pin = "0000"), senderHost = "h").status)
+        assertEquals(401, c.prepareUpload(prepareBody(), senderHost = "h", queryPin = "0000").status)
+    }
+
+    @Test
+    fun prepare_upload_accepts_the_code_from_the_body_or_the_query() {
+        // The spec lets a sender put the code in EITHER place; both are read.
+        val bodyPin = core().also { it.requiredPin = "1844" }
+        assertEquals(200, bodyPin.prepareUpload(prepareBody(pin = "1844"), senderHost = "h").status)
+
+        val queryPin = core().also { it.requiredPin = "1844" }
+        assertEquals(200, queryPin.prepareUpload(prepareBody(), senderHost = "h", queryPin = "1844").status)
+    }
+
+    @Test
+    fun prepare_upload_ignores_the_code_when_none_is_required() {
+        val c = core()
+        assertEquals(200, c.prepareUpload(prepareBody(), senderHost = "h").status)
+    }
+
+    @Test
+    fun upload_without_the_code_is_401_when_a_code_is_required() {
+        val c = core()
+        val p = prepare(c, "a" to "book.epub")
+        // The code is required only from now on — the session was opened
+        // while the device was unlocked, the upload must still prove it.
+        c.requiredPin = "1844"
+        assertEquals(
+            401,
+            c.upload(p.sessionId, "a", p.files["a"]!!, "192.168.1.9", BookDropCore.UploadBody.Memory("hello".toByteArray())).status,
+        )
+        assertEquals(
+            401,
+            c.upload(p.sessionId, "a", p.files["a"]!!, "192.168.1.9", BookDropCore.UploadBody.Memory("hello".toByteArray()), queryPin = "0000").status,
+        )
+        assertEquals(
+            200,
+            c.upload(p.sessionId, "a", p.files["a"]!!, "192.168.1.9", BookDropCore.UploadBody.Memory("hello".toByteArray()), queryPin = "1844").status,
+        )
+    }
+
+    // MARK: - large files
+
+    @Test
+    fun a_spilled_body_is_moved_into_the_session_not_copied() {
+        // The copy was the large-file killer: an audiobook needs TWICE the
+        // free space (the spilled temp file AND the copy) before it can
+        // even reach the library. The move keeps one copy on disk.
+        val c = core()
+        val p = prepare(c, "a" to "audiobook.m4b")
+        val spilled = tmp.newFile("body.bin")
+        spilled.writeBytes("hello".toByteArray())
+        val response = c.upload(
+            p.sessionId, "a", p.files["a"]!!, "192.168.1.9", BookDropCore.UploadBody.File(spilled),
+        )
+        assertEquals(200, response.status)
+        assertFalse("the temp body must be moved, not left behind", spilled.exists())
+        val landed = c.collectCompleted(p.sessionId)
+        assertEquals(1, landed.size)
+        assertEquals("audiobook.m4b", landed[0].file.name)
+        assertEquals(5L, landed[0].file.length())
+    }
+
     // MARK: - helpers
 
     @Test

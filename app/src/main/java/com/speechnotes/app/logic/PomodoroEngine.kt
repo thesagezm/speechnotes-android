@@ -260,19 +260,24 @@ data class PomodoroSession(
      *  the open-ended flowmodoro focus fills cyclically toward the next
      *  earned break minute (300 s per lap). */
     fun phaseProgress(now: Double): Double {
+        // Snapshot the boundaries: they are mutable properties, so Kotlin
+        // cannot smart-cast them inside the branch — and a `!!` here would
+        // be a crash if a phase boundary ever raced this read.
+        val start = phaseStart
+        val end = phaseEnd
         return when {
-            phaseStart != null && phaseEnd != null -> {
-                val total = phaseEnd!! - phaseStart!!
+            start != null && end != null -> {
+                val total = end - start
                 // A degenerate step (start >= end — a corrupted or raced
                 // boundary) must NOT paint the glass full: that is exactly
                 // the "stuck at 100% while the countdown still runs" report.
                 // An empty fill beside a live countdown reads as a cosmetic
                 // glitch; a full one reads as finished, which is a lie.
                 if (total <= 0) return 0.0
-                val elapsed = total.coerceAtMost(maxOf(0.0, anchor(now) - phaseStart!!))
+                val elapsed = total.coerceAtMost(maxOf(0.0, anchor(now) - start))
                 elapsed / total
             }
-            phaseStart != null && phaseEnd == null -> {
+            start != null && end == null -> {
                 val unit = FLOW_UNIT_FOCUS
                 if (unit <= 0) return 0.0
                 val accrued = flowAccruedFocus(now)

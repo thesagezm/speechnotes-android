@@ -139,7 +139,7 @@ fun AboutScreen(onBack: () -> Unit) {
             ListItem(
                 headlineContent = { Text("Speechnotes for Android") },
                 supportingContent = {
-                    Text("Offline TTS notes — the Android port of speechnotes-ios. v1.1.4")
+                    Text("Offline TTS notes — the Android port of speechnotes-ios. v0.1.5")
                 },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
             )

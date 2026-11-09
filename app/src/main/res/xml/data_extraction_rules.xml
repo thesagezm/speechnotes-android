@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    API 31+ backup / device-transfer rules. Nothing leaves the device
+    through the platform: the notes live in the app's private filesDir and
+    are either plaintext (vault off) or sealed with a device-bound key
+    (vault on, unrestorable elsewhere). The sanctioned backup is the app's
+    own .jex export in Settings -> Backup.
+
+    Both the cloud-backup and the device-transfer paths are excluded on
+    purpose — see backup_rules.xml for the reasoning.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

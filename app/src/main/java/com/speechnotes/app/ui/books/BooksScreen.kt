@@ -608,9 +608,13 @@ private fun BookDetailSheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text(book.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            if (!book.author.isNullOrBlank()) {
+            // Snapshot the nullable fields into locals: Kotlin cannot smart-cast
+            // a `val` property of a data class across the lambda boundary, and
+            // the old `!!` would crash the sheet on a concurrent reload.
+            val author = book.author
+            if (!author.isNullOrBlank()) {
                 Text(
-                    book.author!!,
+                    author,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -618,14 +622,15 @@ private fun BookDetailSheet(
             Spacer(Modifier.height(4.dp))
             // A per-book import failure states itself here too — the sheet is
             // where the user goes next after seeing the badge on the card.
-            if (book.importError != null) {
+            val importError = book.importError
+            if (importError != null) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                 ) {
                     Text(
-                        book.importError!!,
+                        importError,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.padding(12.dp),

@@ -140,13 +140,15 @@ private fun BookDropSendContent(
             cleanupStaging(stagingDirs)
         }
     }
-    // The destination wants a code and the field is empty: prefill with THIS
-    // device's send pin (the user who runs the same code everywhere gets a
-    // one-tap retry).
+    // The destination wants a code and the field is empty: prefill with
+    // THIS device's RECEIVE code first (iOS v1.8.1 parity — the
+    // same-code-everywhere user gets a one-tap retry), then with the send
+    // code. A per-peer code can still be typed over the prefill.
     LaunchedEffect(needsAccessCode) {
         if (needsAccessCode && pinText.isEmpty()) {
-            pinText = context.getSharedPreferences(Prefs.NAME, android.content.Context.MODE_PRIVATE)
-                .getString(Prefs.BOOK_DROP_SEND_PIN, "").orEmpty()
+            val prefs = context.getSharedPreferences(Prefs.NAME, android.content.Context.MODE_PRIVATE)
+            pinText = prefs.getString(Prefs.BOOK_DROP_PIN, "").orEmpty()
+                .ifEmpty { prefs.getString(Prefs.BOOK_DROP_SEND_PIN, "").orEmpty() }
         }
     }
 
@@ -269,7 +271,7 @@ private fun BookDropSendContent(
 
         buildError?.let { error -> SheetError(error) }
         if (lastError != null && phase !is LocalSendSender.Phase.Sending) {
-            SheetError(lastError!!)
+            SheetError(lastError.orEmpty())
         }
 
         when (val p = phase) {
@@ -364,7 +366,16 @@ private suspend fun buildItems(
                 val ext = original.name.removePrefix("original.")
                 val fileName = "${sanitizeTitle(book.title)}.$ext"
                 val target = File(staging, fileName)
-                original.copyTo(target, overwrite = true)
+                // HARD LINK, not a copy: an audiobook can be a gigabyte, and
+                // a staged copy needs that much free space AGAIN before the
+                // transfer can start (the "big books never send" bug). A
+                // link costs nothing and still pins the content, so a
+                // re-import of the book cannot change the bytes on the
+                // wire. The copy is the fallback for the one case a link
+                // cannot cover: another filesystem.
+                if (!stageFile(original, target)) {
+                    throw SendBuildError("Could not read that book's file: ${book.title}")
+                }
                 items.add(SendItem(target, fileName, contentTypeFor(ext)))
             }
         }
@@ -400,7 +411,25 @@ private suspend fun buildItems(
     return items to listOf(staging)
 }
 
-private class SendBuildError(message: String) : Exception(message)
+    private class SendBuildError(message: String) : Exception(message)
+
+    /**
+     * Stages [source] at [target] as cheaply as the filesystem allows: a
+     * hard link first (no bytes copied at all), a full copy only when the
+     * link cannot be made — a different filesystem, or a filesystem that
+     * has no hard links.
+     */
+    private fun stageFile(source: File, target: File): Boolean {
+        val linked = runCatching {
+            java.nio.file.Files.createLink(target.toPath(), source.toPath())
+            true
+        }.getOrDefault(false)
+        if (linked) return true
+        return runCatching {
+            source.copyTo(target, overwrite = true)
+            true
+        }.getOrDefault(false)
+    }
 
 private fun sanitizeTitle(title: String): String {
     val slug = title.replace("/", "-")

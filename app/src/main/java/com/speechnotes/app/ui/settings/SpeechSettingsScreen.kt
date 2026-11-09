@@ -155,15 +155,18 @@ private fun SystemVoiceRow(vm: SpeechnotesViewModel, engine: EngineKind, neuralA
             tries++
         }
     }
+    // Snapshot the voice into a local: `systemVoice` is a StateFlow-backed
+    // property, so the compiler cannot smart-cast it inside the `when`.
+    val currentVoice = systemVoice
     ListItem(
         headlineContent = { Text("System voice") },
         supportingContent = {
             Text(
                 when {
-                    systemVoice == null -> "Default (English)"
-                    else -> installed.firstOrNull { it.name == systemVoice }
+                    currentVoice == null -> "Default (English)"
+                    else -> installed.firstOrNull { it.name == currentVoice }
                         ?.let { "${it.name} (${it.locale.toLanguageTag()})" }
-                        ?: systemVoice!!
+                        ?: currentVoice
                 },
                 maxLines = 1,
             )

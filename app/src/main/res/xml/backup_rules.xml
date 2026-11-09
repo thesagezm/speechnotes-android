@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Platform backup is OFF for this app (see data_extraction_rules.xml for
+    API 31+).
+
+    Speechnotes keeps EVERYTHING under the app's private filesDir: notes,
+    notebooks, bookmarks, books, exports, and the neural model files. Two
+    reasons it must not ride a device backup:
+
+      1. With the encryption vault OFF the notes are plaintext JSON — a
+         cloud backup would silently copy the user's private writing off
+         the device.
+      2. With the vault ON the notes are sealed with a ThisDeviceOnly
+         Keystore key — a restored backup would contain notes that can
+         NEVER be decrypted on the new device. That is worse than no
+         backup: it looks like a successful restore and yields unreadable
+         notes.
+
+    The sanctioned backup path is the app's own Settings -> Backup (.jex
+    export/import), which is explicit, user-driven and portable.
+-->
+<full-backup-content>
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+</full-backup-content>

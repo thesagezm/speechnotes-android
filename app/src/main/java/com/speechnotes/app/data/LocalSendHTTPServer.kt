@@ -58,6 +58,7 @@ data class LocalSendResponse(
         fun json(value: String): LocalSendResponse = LocalSendResponse(200, value.toByteArray())
         fun status(code: Int): LocalSendResponse = LocalSendResponse(code)
         fun badRequest(): LocalSendResponse = status(400)
+        fun unauthorized(): LocalSendResponse = status(401)
         fun forbidden(): LocalSendResponse = status(403)
         fun notFound(): LocalSendResponse = status(404)
         fun conflict(): LocalSendResponse = status(409)
@@ -279,7 +280,8 @@ class LocalSendHTTPServer {
             progress.report(total)
             val file = spilled
             if (file != null) {
-                trailing!!.write(chunk)
+                val stream = trailing ?: error("spilled body stream missing")
+                stream.write(chunk)
                 return
             }
             memory.write(chunk)
@@ -323,8 +325,10 @@ class LocalSendHTTPServer {
 
         val file = spilled
         return if (file != null) {
-            trailing!!.flush()
-            trailing!!.close()
+            trailing?.let {
+                it.flush()
+                it.close()
+            }
             LocalSendRequest.Body.File(file, total)
         } else {
             LocalSendRequest.Body.Memory(memory.toByteArray())

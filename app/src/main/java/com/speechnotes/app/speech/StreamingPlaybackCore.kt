@@ -96,6 +96,7 @@ class StreamingPlaybackCore(
      * space (RenderAheadBankPolicy.bankedSeconds). Generate-queue confined.
      */
     private var trackBaseFrames = 0
+    private var trackBufferSeconds = 0.0
 
     /**
      * Wall-clock seconds the previous chunk took to synthesize. Sets the
@@ -202,7 +203,31 @@ class StreamingPlaybackCore(
 
     /** Runs [block] on the generate queue (engine prewarm). */
     fun prewarm(block: () -> Unit) {
-        generateQueue.execute { runCatching { block() } }
+        try {
+            generateQueue.execute { runCatching { block() } }
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            LogStore.warn("${config.logPrefix}: prewarm rejected — the engine queue is shut down")
+        }
+    }
+
+    /**
+     * Runs [block] on the generate queue and WAITS for it (bounded).
+     *
+     * Used when the queue is about to be shut down and the block MUST run
+     * first — closing an ONNX session. A plain [prewarm] would let
+     * `shutdownNow()` discard the queued task and leak the native session.
+     */
+    fun prewarmAndWait(timeoutMs: Long = 2_000L, block: () -> Unit) {
+        val done = java.util.concurrent.CountDownLatch(1)
+        try {
+            generateQueue.execute {
+                runCatching { block() }
+                done.countDown()
+            }
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            done.countDown()
+        }
+        runCatching { done.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) }
     }
 
     // MARK: - Playback
@@ -474,13 +499,13 @@ class StreamingPlaybackCore(
             } else {
                 offset += fit
                 totalFramesWritten += fit
-                // First audible moment: the track starts once the bank holds
-                // the next chunk's expected WALL render time + 1 s of margin
-                // (bounded prebuffer, iOS TTS_BASELINE §2), or everything is
-                // already queued. Starting earlier loses the race whenever
-                // the next chunk renders slower than the bank plays — the
-                // underrun then disables the track at the AudioFlinger level.
-                val prebuffer = maxOf(1.2, lastChunkRenderSeconds + 1.0)
+                // The start threshold must fit the native buffer. Waiting
+                // for more seconds than the buffer can hold would deadlock
+                // the producer after the first partial write.
+                val prebuffer = minOf(
+                    maxOf(1.2, lastChunkRenderSeconds + 1.0),
+                    trackBufferSeconds * 0.75,
+                )
                 if (!trackStarted && !paused.get() &&
                     (bankedSeconds() >= prebuffer || index == chunks.size - 1)
                 ) {
@@ -650,6 +675,9 @@ class StreamingPlaybackCore(
     /** Completion-poll ticks (100 ms) before a fully frozen head ends the session. */
     private val DEAD_HEAD_POLLS = 150
 
+    /** Largest native streaming buffer; larger tracks timed out without draining. */
+    private val MAX_TRACK_BUFFER_BYTES = 32 * 1024
+
     /** Head position at the previous completion poll — stall detection. */
     private var lastPolledHead = 0L
 
@@ -703,13 +731,21 @@ class StreamingPlaybackCore(
     private fun ensureTrack(byteSize: Int): android.media.AudioTrack? {
         if (trackAttached && audioTrack != null) return audioTrack
         return try {
-            // The buffer is the streaming pipeline's shock absorber. The old
-            // max(chunk, 32 KB) held ~0.4 s of audio, so a batch chunk whose
-            // render time exceeded its play time (long PDF chapters on a
-            // phone) drained the buffer between writes — the narration
-            // stalled/gapped. ~2× the chunk (≥1 MB, ≈11 s at 44.1 kHz mono)
-            // lets generation run well ahead of the playback head.
-            val bufferBytes = maxOf(byteSize * 2, 1_000_000).coerceAtMost(8_000_000)
+            val minimum = android.media.AudioTrack.getMinBufferSize(
+                sampleRateHz,
+                android.media.AudioFormat.CHANNEL_OUT_MONO,
+                android.media.AudioFormat.ENCODING_PCM_16BIT,
+            )
+            if (minimum <= 0) {
+                LogStore.error("${config.logPrefix}: invalid minimum AudioTrack buffer ($minimum)")
+                return null
+            }
+            // Keep the native stream buffer small. Large buffers do not
+            // reliably drain on Android audio stacks (including the phone
+            // that produced the user log): AudioFlinger leaves the head at
+            // zero and removes the track on BUFFER TIMEOUT. Render-ahead is
+            // paced by the producer; it does not require a 1 MB HAL buffer.
+            val bufferBytes = maxOf(minimum, minOf(byteSize, MAX_TRACK_BUFFER_BYTES))
             val track = android.media.AudioTrack.Builder()
                 .setAudioAttributes(
                     android.media.AudioAttributes.Builder()
@@ -727,26 +763,20 @@ class StreamingPlaybackCore(
                 .setBufferSizeInBytes(bufferBytes)
                 .setTransferMode(android.media.AudioTrack.MODE_STREAM)
                 .build()
-            // NOT played here. Playing an empty track is a guaranteed
-            // underrun — AudioFlinger disables the track and drops it from
-            // the active list, and every later write then fights the
-            // disable/revive cycle (the "BUFFER TIMEOUT: remove from active
-            // list" spam in the device log). The track starts at the
-            // prebuffer threshold in schedule(), or on resume() / the
-            // writeRemainder() revival path. Chunks arriving while paused
-            // are buffered, not sounded.
             audioTrack = track
             trackAttached = true
-            // The fresh track's head starts at 0 — rebase the bank accounting
-            // onto it (see trackBaseFrames).
             trackBaseFrames = totalFramesWritten
+            trackBufferSeconds = bufferBytes / 2.0 / sampleRateHz
+            LogStore.info(
+                "${config.logPrefix}: AudioTrack ready rate=$sampleRateHz " +
+                    "buffer=$bufferBytes bytes (minimum=$minimum)"
+            )
             track
         } catch (e: Exception) {
             LogStore.error("${config.logPrefix}: AudioTrack setup failed: ${e.message}")
             null
         }
     }
-
     /** The UTF-16 offset just past chunk [index]'s text. */
     private fun indexOf(chunkIndex: Int): Int {
         if (chunkIndex <= 0) return 0

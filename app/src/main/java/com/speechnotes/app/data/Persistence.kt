@@ -80,6 +80,11 @@ object Prefs {
     // any receive-side pin: this device can require a code from others AND
     // send to a peer whose code differs (iOS BookDropSendView parity).
     const val BOOK_DROP_SEND_PIN = "bookDropSendPin"
+    // The access code THIS device demands from incoming transfers — the
+    // iOS v1.8.1 "bookDropPin" key (BookDrop → Receive → Access code).
+    // Read per request by the receiver, so a code typed in Settings takes
+    // effect on the next prepare-upload without a restart.
+    const val BOOK_DROP_PIN = "bookDropPin"
 
     // Reader appearance (ReaderAppearance.swift parity). Booleans that
     // default to TRUE must be stored as "unset | true | false" — a plain

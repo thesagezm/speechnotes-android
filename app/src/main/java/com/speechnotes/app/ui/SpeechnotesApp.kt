@@ -2,6 +2,7 @@ package com.speechnotes.app.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -118,6 +119,10 @@ private fun AppNavHost(
 
     Box(Modifier.fillMaxSize()) {
         Scaffold(
+            // Each destination owns its bars and system insets. Applying the
+            // default safeDrawing insets here as well padded the NavHost by
+            // the status bar before every screen's own app bar did it again.
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             bottomBar = {
                 if (currentRoute in Tab.entries.map { it.route }) {
                     NavigationBar {
@@ -238,7 +243,22 @@ private fun AppNavHost(
                     navController.navigateTab(Tab.NOTES)
                     vm.player.nowPlayingNoteId.value?.let { id -> navController.navigate("note/$id") }
                 },
-                onJumpToBook = { navController.navigateTab(Tab.BOOKS) },
+                // The jump opens the BOOK that is playing — the audiobook on
+                // the dock, or the book a note is being read from. iOS does
+                // the same (GlobalMiniPlayerOverlay.jumpToPlayingContent:
+                // "a playing BOOK routes to the Books tab, pushing the
+                // book's reader"); before this, Android only switched tabs
+                // and left the user to hunt for the book.
+                onJumpToBook = {
+                    val bookId = vm.audioBooks.activeBook.value?.id
+                        ?: vm.player.nowPlayingBookId.value
+                    if (bookId != null) {
+                        // Already in that reader: do not stack a second copy.
+                        if (currentRoute != "book/$bookId") navController.navigate("book/$bookId")
+                    } else {
+                        navController.navigateTab(Tab.BOOKS)
+                    }
+                },
                 // Land on the Storage subpage itself, not the settings root —
                 // the jump exists to reach the exported-audio transport.
                 onJumpToExports = { navController.navigate("settings/storage") },

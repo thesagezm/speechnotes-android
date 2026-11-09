@@ -418,9 +418,15 @@ private fun caption(session: com.speechnotes.app.logic.PomodoroSession) {
         session.config.mode == PomodoroMode.FLOWMODORO ->
             "5 min of focus earns 1 min of break"
         session.config.mode == PomodoroMode.STRUCTURED && session.windowEnd != null -> {
-            val end = java.time.Instant.ofEpochMilli((session.windowEnd!! * 1000).toLong())
-                .atZone(java.time.ZoneId.systemDefault())
-                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+            // `windowEnd` is a mutable property of another class, so Kotlin
+            // cannot smart-cast it here — read it into a local and let the
+            // null branch fall back to the plain caption.
+            val windowEnd = session.windowEnd
+            val end = windowEnd?.let {
+                java.time.Instant.ofEpochMilli((it * 1000).toLong())
+                    .atZone(java.time.ZoneId.systemDefault())
+                    .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+            } ?: ""
             "Ends $end · ${session.config.structuredBreakCount} breaks × ${session.config.structuredBreakSeconds / 60} min"
         }
         else -> {

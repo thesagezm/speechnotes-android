@@ -129,6 +129,26 @@ class KokoroEngine(
     fun release() = core.release()
 
     /**
+     * Retires the engine for good: the ONNX session is closed ON the
+     * generate queue (before the queue dies, so the native memory is
+     * really released) and the queue is shut down.
+     *
+     * Used when the user switches Kokoro tiers — two resident sessions are
+     * 300+ MB, and the retired tier must not keep one alive.
+     */
+    fun shutdown() {
+        core.prewarmAndWait {
+            runCatching { ortSession?.close() }
+            ortSession = null
+            ortEnv = null
+            voicesFlat = emptyMap()
+            modelLoadAttempted = false
+        }
+        core.release()
+        LogStore.info("KokoroEngine: engine retired (session closed, queue shut down)")
+    }
+
+    /**
      * Drops the resident ONNX session and voice bank (iOS idle-unload parity:
      * SpeechPlayer.swift:694,717 — sessions dropped after 5 min idle). The
      * generate-queue-only contract holds: called via [SpeechPlayer] on that
@@ -238,7 +258,7 @@ class KokoroEngine(
         if (offset + styleDim > flat.size) error("voice shape ${flat.size}")
         val style = flat.copyOfRange(offset, offset + styleDim)
 
-        val env = ortEnv!!
+        val env = ortEnv ?: error("ONNX environment unavailable")
         val tokensLong = tokens.map { it.toLong() }
         val shape = longArrayOf(1, tokensLong.size.toLong())
 

@@ -54,8 +54,15 @@ class LocalSendReceiver(private val context: Context) {
         sessionsRoot = AppFiles.bookDropIncomingDir,
     )
 
-    /** Routes a landed file into the import pipeline. Set by the app at startup. */
-    var router: ((File) -> Unit)? = null
+    /**
+     * Routes a landed file into the import pipeline. Set by the app at
+     * startup. SUSPENDING on purpose: the import of a 1 GB audiobook takes
+     * far longer than the receiver's grace beat, and a fire-and-forget
+     * router let the session sweep delete the file while it was still being
+     * imported (the "large files never arrive" bug). The iOS receiver
+     * awaits its router for the same reason.
+     */
+    var router: (suspend (File) -> Unit)? = null
 
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
@@ -177,6 +184,10 @@ class LocalSendReceiver(private val context: Context) {
         // Task per session; the sweep is behaviorally identical and needs no
         // scheduler).
         core.sweepExpiredSessions()
+        // The access code is read PER REQUEST (iOS v1.8.1 parity): a code
+        // typed in Settings takes effect on the next prepare-upload, with
+        // no restart of the receiver.
+        core.requiredPin = prefs().getString(Prefs.BOOK_DROP_PIN, "")?.trim().orEmpty()
         return when (request.path) {
             "/api/localsend/v2/register" -> core.registerOrInfo()
             "/api/localsend/v2/info" -> core.registerOrInfo()
@@ -184,7 +195,11 @@ class LocalSendReceiver(private val context: Context) {
                 val body = request.bodySource as? LocalSendRequest.Body.Memory
                     ?: return LocalSendResponse.badRequest()
                 _incomingTransfer.value = null // a fresh session starts with a clean bar
-                core.prepareUpload(String(body.data), request.remoteHost)
+                core.prepareUpload(
+                    bodyJson = String(body.data),
+                    senderHost = request.remoteHost,
+                    queryPin = request.queryValue("pin"),
+                )
             }
             "/api/localsend/v2/upload" -> {
                 val body = when (val source = request.bodySource) {
@@ -197,6 +212,7 @@ class LocalSendReceiver(private val context: Context) {
                     token = request.queryValue("token"),
                     remoteHost = request.remoteHost,
                     body = body,
+                    queryPin = request.queryValue("pin"),
                 )
                 // The body has fully arrived by the time this runs: whatever
                 // the validation finds, the streaming bar's job is done.
@@ -215,6 +231,11 @@ class LocalSendReceiver(private val context: Context) {
     /**
      * All files landed → hand each to the router, then sweep the session dir
      * after a grace beat (rejected leftovers, failed imports).
+     *
+     * The router is AWAITED: the grace beat starts when the import is
+     * finished, not when the file landed. A 1 GB audiobook takes minutes to
+     * copy into the library and parse; the old fire-and-forget route let
+     * the sweep delete the file out from under the import.
      */
     private fun routeLanded(sessionId: String?) {
         if (sessionId == null) return
@@ -227,7 +248,12 @@ class LocalSendReceiver(private val context: Context) {
         scope.launch {
             val dir = landed.firstOrNull()?.file?.parentFile
             for (landedFile in landed) {
-                router(landedFile.file)
+                runCatching { router(landedFile.file) }
+                    .onFailure { error ->
+                        LogStore.error(
+                            "BookDrop: import of ${landedFile.file.name} failed — ${error.message}",
+                        )
+                    }
             }
             // The router consumes what it handles; sweep the rest later.
             kotlinx.coroutines.delay(30_000)

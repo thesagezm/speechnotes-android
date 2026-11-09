@@ -97,10 +97,10 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
         com.speechnotes.app.data.BookDropRegistry.registerImporter { file ->
             val ext = file.extension.lowercase()
             when (ext) {
-                "jex" -> importJex(android.net.Uri.fromFile(file))
+                "jex" -> importJexAwait(android.net.Uri.fromFile(file))
                 "wav" -> importBookDropRecording(file)
                 "md", "markdown", "txt", "text" -> importBookDropNote(file)
-                else -> importBook(android.net.Uri.fromFile(file))
+                else -> importBookFile(file)
             }
         }
     }
@@ -109,33 +109,75 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
      * A received WAV is exported audio, not a book: it lands in Exports
      * beside the ones the note export pipeline writes, so Storage lists it
      * at once (iOS LocalSendReceiver routing parity).
+     *
+     * Suspending: the receiver awaits the route, so the file is in place
+     * before the session sweep can run.
      */
-    private fun importBookDropRecording(file: java.io.File) {
-        appScope.launch {
-            val target = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                val dir = com.speechnotes.app.logic.AppFiles.exportsDir
-                dir.mkdirs()
-                // Never overwrite a recording that is already there.
-                var candidate = java.io.File(dir, file.name)
-                if (candidate.exists()) {
-                    val stem = file.nameWithoutExtension
-                    candidate = java.io.File(dir, "${java.util.UUID.randomUUID().toString().take(6)}-$stem.${file.extension}")
-                }
-                runCatching { file.copyTo(candidate, overwrite = false); candidate }.getOrNull()
+    private suspend fun importBookDropRecording(file: java.io.File) {
+        val target = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val dir = com.speechnotes.app.logic.AppFiles.exportsDir
+            dir.mkdirs()
+            // Never overwrite a recording that is already there.
+            var candidate = java.io.File(dir, file.name)
+            if (candidate.exists()) {
+                val stem = file.nameWithoutExtension
+                candidate = java.io.File(dir, "${java.util.UUID.randomUUID().toString().take(6)}-$stem.${file.extension}")
             }
-            if (target == null) {
-                com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
-                    file.name, file.length(),
-                    com.speechnotes.app.logic.BookDropRecord.Outcome.Failed("Could not save the recording"),
-                )
-                return@launch
-            }
-            exports.refresh()
+            runCatching { file.copyTo(candidate, overwrite = false); candidate }.getOrNull()
+        }
+        if (target == null) {
             com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
-                target.nameWithoutExtension, target.length(),
-                com.speechnotes.app.logic.BookDropRecord.Outcome.Imported("Saved to Exported audio"),
+                file.name, file.length(),
+                com.speechnotes.app.logic.BookDropRecord.Outcome.Failed("Could not save the recording"),
             )
-            runCatching { file.delete() }
+            return
+        }
+        exports.refresh()
+        com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
+            target.nameWithoutExtension, target.length(),
+            com.speechnotes.app.logic.BookDropRecord.Outcome.Imported("Saved to Exported audio"),
+        )
+        runCatching { file.delete() }
+    }
+
+    /**
+     * A book that arrived over BookDrop. The landed file is MOVED into the
+     * library — not copied: an audiobook can be a gigabyte, and the copy
+     * needed twice the free space on top of the transfer's own temporary
+     * file (the "large books never arrive" bug). The share-intent path
+     * still copies, because there the source is outside the app's storage.
+     */
+    private suspend fun importBookFile(file: java.io.File) {
+        val ext = file.extension.lowercase()
+        val name = file.name
+        val book = books.beginImport()
+        val target = com.speechnotes.app.logic.AppFiles.bookOriginalFile(book.id, ext)
+        val moved = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                target.parentFile?.mkdirs()
+                if (!file.renameTo(target)) {
+                    file.copyTo(target, overwrite = true)
+                    file.delete()
+                }
+                target.length() > 0
+            }.getOrElse {
+                LogStore.error("BookImport: could not file ${file.name} — ${it::class.simpleName}: ${it.message}")
+                false
+            }
+        }
+        if (!moved) {
+            books.endImport(null, "Could not read that file.")
+            showToast("Could not read that file.")
+            return
+        }
+        when (ext) {
+            "epub" -> importEpub(book, target)
+            "pdf" -> importPdf(book, target, name.substringBeforeLast('.'))
+            else -> if (com.speechnotes.app.logic.DocumentBook.canNormalize(ext)) {
+                importDocument(book, target, ext, name.substringBeforeLast('.'))
+            } else {
+                importAudio(book, target, ext)
+            }
         }
     }
 
@@ -143,42 +185,43 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
      * Markdown/plain text sent from another device is a NOTE (iOS routes it
      * to the notes). The first heading becomes the title; the rest is the
      * body.
+     *
+     * Suspending: the receiver awaits the route, so the note exists before
+     * the session sweep can run.
      */
-    private fun importBookDropNote(file: java.io.File) {
-        appScope.launch {
-            val text = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching { file.readText() }.getOrNull()
-            }
-            if (text == null) {
-                com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
-                    file.name, file.length(),
-                    com.speechnotes.app.logic.BookDropRecord.Outcome.Failed("Could not read that file"),
-                )
-                return@launch
-            }
-            val heading = text.lineSequence()
-                .map { it.trim() }
-                .firstOrNull { it.startsWith("#") }
-                ?.trimStart('#')
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-            val title = heading ?: file.nameWithoutExtension
-            val body = if (heading != null) {
-                text.lineSequence()
-                    .dropWhile { it.trim().startsWith("#") && it.trim().trimStart('#').trim() == heading }
-                    .joinToString("\n")
-                    .trimStart('\n', ' ')
-            } else {
-                text
-            }
-            val note = notes.createNote()
-            notes.update(note.copy(text = body, explicitTitle = title.take(80)))
-            com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
-                title, file.length(),
-                com.speechnotes.app.logic.BookDropRecord.Outcome.Imported("Saved as a note"),
-            )
-            runCatching { file.delete() }
+    private suspend fun importBookDropNote(file: java.io.File) {
+        val text = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { file.readText() }.getOrNull()
         }
+        if (text == null) {
+            com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
+                file.name, file.length(),
+                com.speechnotes.app.logic.BookDropRecord.Outcome.Failed("Could not read that file"),
+            )
+            return
+        }
+        val heading = text.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("#") }
+            ?.trimStart('#')
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        val title = heading ?: file.nameWithoutExtension
+        val body = if (heading != null) {
+            text.lineSequence()
+                .dropWhile { it.trim().startsWith("#") && it.trim().trimStart('#').trim() == heading }
+                .joinToString("\n")
+                .trimStart('\n', ' ')
+        } else {
+            text
+        }
+        val note = notes.createNote()
+        notes.update(note.copy(text = body, explicitTitle = title.take(80)))
+        com.speechnotes.app.data.BookDropRegistry.receiver?.reportImport(
+            title, file.length(),
+            com.speechnotes.app.logic.BookDropRecord.Outcome.Imported("Saved as a note"),
+        )
+        runCatching { file.delete() }
     }
 
     fun addGoal(book: Book, start: Long, deadline: Long) {
@@ -361,7 +404,11 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
         }
         models.onReady = {
             player.refreshEngineAvailability()
-            // A fresh model download also shouldn't pay the load on first play.
+            // The model just finished downloading — an EXPLICIT user action,
+            // so warming it now is fair: the first play skips the 2.2 s
+            // model load. R7: nothing is warmed at app start any more (the
+            // eager load cost 2.2 s of cold start and 150–250 MB resident
+            // before the user ever asked for speech).
             player.prewarmActiveEngine()
         }
         loadTheme()
@@ -382,10 +429,14 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
             }
         }
 
-        // Pre-warm the active neural engine (ONNX session + G2P) in the
-        // background so the FIRST play doesn't pay it — the "time to first
-        // audio is so long" fix. No-op for the system engine.
-        appScope.launch(kotlinx.coroutines.Dispatchers.Default) { player.prewarmActiveEngine() }
+        // R7 (lazy engine init): the neural engine is NOT warmed at app
+        // start any more. The eager load ("KokoroEngine: 115 vocab entries,
+        // 28 voices ready in 2191 ms" at EVERY launch) cost 2.2 s of cold
+        // start and 150–250 MB of resident memory before the user asked for
+        // any speech — it was the app's largest resident process and the
+        // host LMK killed it three times in 90 minutes. The model now loads
+        // on the first real speak (or an explicit user-initiated prewarm:
+        // a model whose download just finished).
 
         // Covers only ever generated at import time — books imported before
         // that (or whose render failed) show the plain gradient card forever.
@@ -1763,83 +1814,90 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
      * reconstituted), so an export→import round-trip keeps its identity.
      */
     fun importJex(uri: android.net.Uri) {
-        appScope.launch {
-            val result = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                runCatching {
-                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: return@runCatching null
-                    com.speechnotes.app.logic.JexImport.parse(bytes)
-                }.getOrElse { error ->
-                    LogStore.error("JexImport failed: ${error.message}")
-                    null
-                }
-            }
-            if (result == null) {
-                showToast("Could not read that .jex file.")
-                return@launch
-            }
+        appScope.launch { importJexAwait(uri) }
+    }
 
-            // Notebooks: restore exported ids when possible, merge by name.
-            val notebookIdMap = HashMap<String, String>() // joplin id → app id
-            var notebooksAdded = 0
-            result.notebooks.forEach { imported ->
-                val restoredId = com.speechnotes.app.logic.JexImport.uuid(fromJoplinId = imported.id)
-                val existingByRestoredId = restoredId?.let { id -> notebooks.notebooks.value.firstOrNull { it.id == id } }
-                val appNotebook = when {
-                    existingByRestoredId != null -> existingByRestoredId
-                    notebooks.notebooks.value.any { it.name.equals(imported.title, ignoreCase = true) } ->
-                        notebooks.notebooks.value.first { it.name.equals(imported.title, ignoreCase = true) }
-                    else -> {
-                        val created = restoredId?.let { notebooks.addExisting(it, imported.title) }
-                            ?: notebooks.create(imported.title)
-                        notebooksAdded++
-                        created
-                    }
-                }
-                if (appNotebook != null) notebookIdMap[imported.id] = appNotebook.id
+    /**
+     * The .jex import, awaited. The BookDrop receiver awaits its route so
+     * the session sweep cannot delete the archive while it is still being
+     * unpacked into the notes.
+     */
+    private suspend fun importJexAwait(uri: android.net.Uri) {
+        val result = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: return@runCatching null
+                com.speechnotes.app.logic.JexImport.parse(bytes)
+            }.getOrElse { error ->
+                LogStore.error("JexImport failed: ${error.message}")
+                null
             }
-
-            // Notes: store referenced resources first so the rewritten
-            // markdown points at files that exist.
-            var notesImported = 0
-            var imagesImported = 0
-            result.notes.forEach { imported ->
-                val restoredId = com.speechnotes.app.logic.JexImport.uuid(fromJoplinId = imported.id)
-                val noteId = restoredId ?: java.util.UUID.randomUUID().toString()
-                var body = imported.body
-                imported.resources.forEach { (resourceId, markdownTarget) ->
-                    val resource = result.resources.firstOrNull { it.id == resourceId } ?: return@forEach
-                    val target = com.speechnotes.app.logic.NoteImageStore.store(
-                        resource.data, resource.fileExtension, noteId,
-                    )
-                    if (target != null) {
-                        body = body.replace(markdownTarget, target)
-                        imagesImported++
-                    }
-                }
-                val notebookId = imported.notebookId?.let { notebookIdMap[it] }
-                val existing = notes.note(noteId)
-                if (existing != null) {
-                    notes.update(existing.copy(text = body, notebookId = notebookId))
-                } else {
-                    // E6: restore the exported title and timestamps — the
-                    // imported note keeps its identity, not a fresh "now".
-                    notes.importNote(
-                        noteId, body, notebookId,
-                        explicitTitle = imported.title.takeIf { it.isNotBlank() },
-                        createdAt = imported.createdAt.takeIf { it > 0 },
-                        updatedAt = imported.updatedAt.takeIf { it > 0 },
-                    )
-                }
-                notesImported++
-            }
-            notes.flushNow()
-            val parts = mutableListOf<String>()
-            parts.add("$notesImported notes")
-            if (notebooksAdded > 0) parts.add("$notebooksAdded notebooks")
-            if (imagesImported > 0) parts.add("$imagesImported images")
-            showToast("Imported ${parts.joinToString(", ")}")
         }
+        if (result == null) {
+            showToast("Could not read that .jex file.")
+            return
+        }
+
+        // Notebooks: restore exported ids when possible, merge by name.
+        val notebookIdMap = HashMap<String, String>() // joplin id → app id
+        var notebooksAdded = 0
+        result.notebooks.forEach { imported ->
+            val restoredId = com.speechnotes.app.logic.JexImport.uuid(fromJoplinId = imported.id)
+            val existingByRestoredId = restoredId?.let { id -> notebooks.notebooks.value.firstOrNull { it.id == id } }
+            val appNotebook = when {
+                existingByRestoredId != null -> existingByRestoredId
+                notebooks.notebooks.value.any { it.name.equals(imported.title, ignoreCase = true) } ->
+                    notebooks.notebooks.value.first { it.name.equals(imported.title, ignoreCase = true) }
+                else -> {
+                    val created = restoredId?.let { notebooks.addExisting(it, imported.title) }
+                        ?: notebooks.create(imported.title)
+                    notebooksAdded++
+                    created
+                }
+            }
+            if (appNotebook != null) notebookIdMap[imported.id] = appNotebook.id
+        }
+
+        // Notes: store referenced resources first so the rewritten
+        // markdown points at files that exist.
+        var notesImported = 0
+        var imagesImported = 0
+        result.notes.forEach { imported ->
+            val restoredId = com.speechnotes.app.logic.JexImport.uuid(fromJoplinId = imported.id)
+            val noteId = restoredId ?: java.util.UUID.randomUUID().toString()
+            var body = imported.body
+            imported.resources.forEach { (resourceId, markdownTarget) ->
+                val resource = result.resources.firstOrNull { it.id == resourceId } ?: return@forEach
+                val target = com.speechnotes.app.logic.NoteImageStore.store(
+                    resource.data, resource.fileExtension, noteId,
+                )
+                if (target != null) {
+                    body = body.replace(markdownTarget, target)
+                    imagesImported++
+                }
+            }
+            val notebookId = imported.notebookId?.let { notebookIdMap[it] }
+            val existing = notes.note(noteId)
+            if (existing != null) {
+                notes.update(existing.copy(text = body, notebookId = notebookId))
+            } else {
+                // E6: restore the exported title and timestamps — the
+                // imported note keeps its identity, not a fresh "now".
+                notes.importNote(
+                    noteId, body, notebookId,
+                    explicitTitle = imported.title.takeIf { it.isNotBlank() },
+                    createdAt = imported.createdAt.takeIf { it > 0 },
+                    updatedAt = imported.updatedAt.takeIf { it > 0 },
+                )
+            }
+            notesImported++
+        }
+        notes.flushNow()
+        val parts = mutableListOf<String>()
+        parts.add("$notesImported notes")
+        if (notebooksAdded > 0) parts.add("$notebooksAdded notebooks")
+        if (imagesImported > 0) parts.add("$imagesImported images")
+        showToast("Imported ${parts.joinToString(", ")}")
     }
 
     // MARK: - Downloads
@@ -1873,7 +1931,8 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
                 modelClass: Class<T>,
                 extras: androidx.lifecycle.viewmodel.CreationExtras,
             ): T {
-                val app = extras[androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]!!
+                val app = extras[androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]
+                    ?: error("Application missing from CreationExtras")
                 return SpeechnotesViewModel(app as android.app.Application) as T
             }
         }

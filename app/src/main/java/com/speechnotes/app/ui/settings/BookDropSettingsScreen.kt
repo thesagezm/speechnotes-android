@@ -11,7 +11,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.RemoveCircleOutline
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -88,6 +91,17 @@ private fun BookDropCard() {
                 .getBoolean(Prefs.BOOK_DROP_AUTO_ACCEPT, true),
         )
     }
+    // The receive-side access code (iOS v1.8.1 "bookDropPin"): when set,
+    // a sender must present it or the transfer is refused with 401. The
+    // receiver reads it per request, so a code typed here takes effect on
+    // the next prepare-upload — no restart.
+    var accessCode by remember {
+        mutableStateOf(
+            context.getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+                .getString(Prefs.BOOK_DROP_PIN, "").orEmpty(),
+        )
+    }
+    var accessCodeVisible by remember { mutableStateOf(false) }
 
     fun setEnabled(to: Boolean) {
         enabled = to
@@ -115,6 +129,49 @@ private fun BookDropCard() {
                         .edit().putBoolean(Prefs.BOOK_DROP_AUTO_ACCEPT, to).apply()
                 },
             )
+            // The access code other devices must present to send here.
+            // It is the same code the send sheet offers as a prefill, so
+            // one code can run across the family (iOS parity).
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = accessCode,
+                    onValueChange = { to ->
+                        accessCode = to
+                        context.getSharedPreferences(Prefs.NAME, Context.MODE_PRIVATE)
+                            .edit().putString(Prefs.BOOK_DROP_PIN, to).apply()
+                    },
+                    label = { Text("Access code (optional)") },
+                    singleLine = true,
+                    visualTransformation = if (accessCodeVisible) {
+                        androidx.compose.ui.text.input.VisualTransformation.None
+                    } else {
+                        androidx.compose.ui.text.input.PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { accessCodeVisible = !accessCodeVisible }) {
+                            Icon(
+                                imageVector = if (accessCodeVisible) {
+                                    Icons.Default.VisibilityOff
+                                } else {
+                                    Icons.Default.Visibility
+                                },
+                                contentDescription = if (accessCodeVisible) "Hide the access code" else "Show the access code",
+                            )
+                        }
+                    },
+                    supportingText = {
+                        Text(
+                            if (accessCode.isBlank()) {
+                                "Devices on this network can send files here without a code."
+                            } else {
+                                "A sending device must type this code before the transfer starts."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             // The file currently streaming IN — name + throttled byte bar
             // (iOS BookDropView's Receiving section, dbc0677 parity).
             incoming?.let { transfer ->

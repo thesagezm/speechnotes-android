@@ -551,7 +551,7 @@ Nine cards in one scrolling column:
 | 6 | **Backup** | `.jex` export with a notebook-scope sheet, `.jex` import |
 | 7 | **Storage** | usage breakdown, exported-audio list with inline transport, delete all, clear temp |
 | 8 | **Diagnostics** | Logs link |
-| 9 | **About** | "v1.1.4", "MIT License · Open source" |
+| 9 | **About** | "v0.1.5", "MIT License · Open source" |
 
 **There is no voice picker in Settings** — the picker is reachable only from the note editor
 (`ui/editor/NoteEditorScreen.kt:808`).

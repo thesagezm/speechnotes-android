@@ -114,6 +114,23 @@ class SpeechPlayer(
     private var systemEngine: SystemTtsEngine? = null
     private var kokoroEngine: KokoroEngine? = null
     private var supertonicEngine: SupertonicEngine? = null
+
+    /**
+     * The engine of the CURRENT selection — null until one is actually
+     * needed (R7, lazy engine init).
+     *
+     * Why: at EVERY app start the logcat showed
+     * "KokoroEngine: 115 vocab entries, 28 voices ready in 2191 ms" — the
+     * ONNX session was loaded EAGERLY, before the user ever asked for
+     * speech. It cost 2.2 s of cold start and 150–250 MB of resident
+     * memory (app RSS 428–466 MB with Kokoro-small vs 218–270 MB on the
+     * system engine) and the host LMK killed the process 3× in 90 minutes.
+     *
+     * The engine is now resolved on the first REAL request — a speak, an
+     * audition, a WAV export — or by an explicit user-initiated prewarm
+     * (a model whose download just finished). Nothing is constructed or
+     * loaded at app start.
+     */
     private var activeEngine: SpeechEngine? = null
 
     /** True when a neural engine is selected but its model isn't downloaded. */
@@ -191,9 +208,28 @@ class SpeechPlayer(
 
     // MARK: - Engine construction
 
-    private fun rebuildEngine() {
+    /**
+     * Re-evaluates the engine selection. Does NOT construct an engine and
+     * does NOT load a model — the engine is resolved on demand by
+     * [resolveEngine] (R7).
+     *
+     * [releasePreviousModel] is set when the SELECTION changed: the engine
+     * we are leaving behind must drop its resident ONNX session, or
+     * switching engines leaves 300 MB of the old model resident for the
+     * rest of the process' life.
+     */
+    private fun rebuildEngine(releasePreviousModel: Boolean = false) {
         val kind = _engineKind.value
-        activeEngine?.stop()
+        val previous = activeEngine
+        previous?.stop()
+        activeEngine = null
+        if (releasePreviousModel) {
+            // Drop the model of the engine we just left. The engine OBJECT
+            // stays alive (its queue must survive to run the unload), but
+            // the ONNX session goes — that is the 300 MB.
+            runCatching { (previous as? KokoroEngine)?.unloadModel() }
+            runCatching { (previous as? SupertonicEngine)?.unloadModel() }
+        }
         // When a neural engine is selected but its model isn't downloaded, the
         // system engine is the ACTIVE engine — so playback still works and the
         // voice description says so.
@@ -202,18 +238,33 @@ class SpeechPlayer(
             EngineKind.KOKORO, EngineKind.KOKORO_SMALL -> !ModelFiles.isValid(kind)
             EngineKind.SUPERTONIC -> !ModelFiles.isValid(EngineKind.SUPERTONIC)
         }
-        activeEngine = when (kind) {
+        LogStore.info(
+            "SpeechPlayer: engine = ${kind.key} (fallback=$usingSystemFallback, loaded on demand)"
+        )
+    }
+
+    /**
+     * The engine for the current selection, CONSTRUCTED on first use (R7).
+     *
+     * Construction is cheap: the ONNX session is only created by the
+     * engine's own load path, which runs on the generate queue when a
+     * session starts (or when the user explicitly prewarms). The system
+     * engine binds to the platform TTS service — also on first use.
+     */
+    private fun resolveEngine(): SpeechEngine {
+        activeEngine?.let { return it }
+        val kind = _engineKind.value
+        val engine: SpeechEngine = when (kind) {
             EngineKind.SYSTEM -> system()
             EngineKind.KOKORO, EngineKind.KOKORO_SMALL ->
                 if (usingSystemFallback) system() else kokoroEngineFor(kind)
             EngineKind.SUPERTONIC ->
                 if (usingSystemFallback) system() else supertonic()
         }
-        activeEngine?.speed = _rateMultiplier.value.toFloat()
-        LogStore.info("SpeechPlayer: engine = ${kind.key} (active=${activeEngine?.name}, fallback=$usingSystemFallback)")
-        // Every rebuild re-warms the newly active engine so engine switches
-        // don't re-pay the model load on the first play either.
-        if (!usingSystemFallback) runCatching { activeEngine?.prewarm() }
+        engine.speed = _rateMultiplier.value.toFloat()
+        activeEngine = engine
+        LogStore.info("SpeechPlayer: engine ${engine.name} constructed on demand")
+        return engine
     }
 
     private fun system(): SpeechEngine =
@@ -233,17 +284,26 @@ class SpeechPlayer(
             it.renderQuality = SupertonicEngine.RenderQuality.fromRaw(_supertonicQuality.value)
         }
 
-    private fun kokoroEngineFor(kind: EngineKind): KokoroEngine =
-        kokoroEngine?.takeIf { it.engineKind == kind }
-            ?: KokoroEngine(kind).also {
-                kokoroEngine = it
-                it.voice = _voice.value
-                // Without observe() the engine's state/progress/finished
-                // callbacks never reach the player: UI stayed IDLE while the
-                // engine spoke — no mini player, no pause toggle, and extra
-                // taps restarted generation from scratch.
-                observe(it)
-            }
+    private fun kokoroEngineFor(kind: EngineKind): KokoroEngine {
+        val existing = kokoroEngine
+        if (existing != null && existing.engineKind == kind) return existing
+        // Switching Kokoro tiers (fp32 ↔ int8): the other tier's ONNX
+        // session must go — two resident sessions are 300+ MB. The retire
+        // runs off the main thread and closes the session BEFORE the old
+        // queue dies, so nothing leaks.
+        if (existing != null) {
+            scope.launch(kotlinx.coroutines.Dispatchers.Default) { existing.shutdown() }
+        }
+        return KokoroEngine(kind).also {
+            kokoroEngine = it
+            it.voice = _voice.value
+            // Without observe() the engine's state/progress/finished
+            // callbacks never reach the player: UI stayed IDLE while the
+            // engine spoke — no mini player, no pause toggle, and extra
+            // taps restarted generation from scratch.
+            observe(it)
+        }
+    }
 
     private fun observe(engine: SpeechEngine) {
         engine.onStateChanged = { newState ->
@@ -383,7 +443,8 @@ class SpeechPlayer(
         _engineKind.value = kind
         Prefs.prefs(context).edit().putString(Prefs.ENGINE_KIND, kind.key).apply()
         stop()
-        rebuildEngine()
+        // The selection changed: the engine we leave behind drops its model.
+        rebuildEngine(releasePreviousModel = true)
     }
 
     fun setVoice(codename: String, engine: EngineKind = _engineKind.value) {
@@ -481,15 +542,24 @@ class SpeechPlayer(
         rebuildEngine()
     }
 
-/**
-         * Warms the active engine off-thread (ONNX sessions, G2P). Called at app
-         * start and after a model download so the first Play skips the model-load
-         * stall — the "time to first audio" complaint.
-         */
-        fun prewarmActiveEngine() {
-            if (usingSystemFallback) return
-            runCatching { activeEngine?.prewarm() }
-        }
+    /**
+     * Warms the active engine off-thread (ONNX session, G2P tables).
+     *
+     * EXPLICIT, USER-INITIATED ONLY — the engine the user just downloaded a
+     * model for. NOT called at app start: that eager load was the P0 (2.2 s
+     * of cold start + 150–250 MB resident before the user asked for any
+     * speech — see [activeEngine]).
+     *
+     * A prewarmed engine the user never plays is still released by the
+     * 5-minute idle unload, armed here because a prewarm produces no IDLE
+     * transition of its own.
+     */
+    fun prewarmActiveEngine() {
+        if (usingSystemFallback) return
+        val engine = resolveEngine()
+        armIdleUnload()
+        runCatching { engine.prewarm() }
+    }
 
         // One engine-level retry on a fresh play. Kokoro/Supertonic
         // load 30–400 MB of ONNX on first use; on a low-memory device that
@@ -608,7 +678,7 @@ class SpeechPlayer(
         val suffix = if (snapped > 0) text.substring(snapped) else text
         engineSpeechOffset = snapped
         LogStore.info("SpeechPlayer: playFrom char $snapped/${text.length} (requested $offset)")
-        activeEngine?.speak(suffix, _rateMultiplier.value)
+        resolveEngine().speak(suffix, _rateMultiplier.value)
         // Publish GENERATING synchronously if the engine didn't already (the
         // streaming core does during its in-place supersession; the system
         // TTS reaches it asynchronously from onStart) — same tap-path rule
@@ -688,7 +758,7 @@ class SpeechPlayer(
         // that finally landed is what the user heard as "the button only
         // registered later".
         _state.value = SpeechState.GENERATING
-        activeEngine?.speak(toSpeak, _rateMultiplier.value)
+        resolveEngine().speak(toSpeak, _rateMultiplier.value)
         requestFocus()
         if (_auditioningVoice.value != null) stopAudition()
     }
@@ -842,7 +912,7 @@ class SpeechPlayer(
         spokenText = text
         engineSpeechOffset = 0
         beginReadAlong(text, SentenceChunker.sentencePieces(text))
-        activeEngine?.speak(text, _rateMultiplier.value)
+        resolveEngine().speak(text, _rateMultiplier.value)
         requestFocus()
         // Restore the previous voice when the audition stops naturally. The
         // watcher waits for the state to LEAVE idle first — engines reach
@@ -925,7 +995,7 @@ class SpeechPlayer(
         }
         val cleaned = text.trim()
         if (cleaned.isEmpty()) return
-        val engine = activeEngine ?: return
+        val engine = resolveEngine()
         // R6d (iOS SpeechPlayer.export parity): stop the live session FIRST —
         // the export renders on the engine's generate queue, and sharing it
         // with an active session interleaved offline synthesis with live
@@ -977,7 +1047,10 @@ class SpeechPlayer(
     fun shutdown() {
         stop()
         systemEngine?.shutdown()
-        kokoroEngine?.release()
-        supertonicEngine?.release()
+        // shutdown() (not release()): the ONNX sessions are closed, so the
+        // native memory goes with the process instead of waiting for a GC
+        // finalizer that may never run.
+        kokoroEngine?.shutdown()
+        supertonicEngine?.shutdown()
     }
 }

@@ -112,6 +112,19 @@ class BookDropCore(
     @Volatile
     var autoAccept: Boolean = true
 
+    /**
+     * The access code demanded on incoming transfers ("" = none required).
+     *
+     * iOS v1.8.1 parity: the receive side keeps its own code under the
+     * "bookDropPin" preference and the receiver reads it PER REQUEST, so a
+     * code typed in Settings takes effect on the next prepare without a
+     * restart. A sender proves it knows the code with the `pin` field of
+     * the prepare body or the `?pin=` query parameter — the spec allows
+     * both places, so both are read.
+     */
+    @Volatile
+    var requiredPin: String = ""
+
     fun currentHistory(): List<BookDropRecord> = synchronized(history) { ArrayList(history) }
 
     private fun insertHistory(record: BookDropRecord) {
@@ -130,10 +143,20 @@ class BookDropCore(
 
     // MARK: - prepare-upload
 
-    fun prepareUpload(bodyJson: String, senderHost: String?): LocalSendResponse {
+    fun prepareUpload(bodyJson: String, senderHost: String?, queryPin: String? = null): LocalSendResponse {
         val payload = runCatching {
             json.decodeFromString(LocalSendPrepareUpload.serializer(), bodyJson)
         }.getOrNull() ?: return LocalSendResponse.badRequest()
+
+        // The access code FIRST (spec: 401 = PIN required/wrong, distinct
+        // from 403 "auto-accept off"), so a locked device tells the peer
+        // WHY. Both places the spec lets a sender put it are read: the
+        // `pin` field of the prepare body and the `?pin=` query parameter.
+        val bodyPin = payload.pin?.trim().orEmpty()
+        val offeredPin = bodyPin.ifEmpty { queryPin?.trim().orEmpty() }
+        if (requiredPin.isNotEmpty() && offeredPin != requiredPin) {
+            return LocalSendResponse.unauthorized()
+        }
 
         synchronized(lock) {
             if (!autoAccept) return LocalSendResponse.forbidden()
@@ -178,6 +201,7 @@ class BookDropCore(
         token: String?,
         remoteHost: String?,
         body: UploadBody,
+        queryPin: String? = null,
     ): LocalSendResponse {
         if (sessionId == null || fileId == null || token == null) return LocalSendResponse.badRequest()
         synchronized(lock) {
@@ -187,6 +211,11 @@ class BookDropCore(
                 return LocalSendResponse.forbidden()
             }
             if (session.tokens[fileId] != token) return LocalSendResponse.forbidden()
+            // The access code rides the upload query too — a sniffed
+            // session must not outlive the check that granted it.
+            if (requiredPin.isNotEmpty() && queryPin?.trim().orEmpty() != requiredPin) {
+                return LocalSendResponse.unauthorized()
+            }
             if (session.receivedIds.contains(fileId)) return LocalSendResponse.conflict()
             val meta = session.files[fileId] ?: return LocalSendResponse.badRequest()
 
@@ -206,8 +235,16 @@ class BookDropCore(
                 is UploadBody.Memory -> runCatching { target.writeBytes(body.data) }.isSuccess
                 is UploadBody.File -> runCatching {
                     target.parentFile?.mkdirs()
-                    body.file.copyTo(target, overwrite = true)
-                    body.file.delete()
+                    // MOVE, don't copy. The spilled body and the session
+                    // dir live under the same parent (the BookDrop incoming
+                    // dir), so a rename is atomic and free — while a copy
+                    // of a 1 GB audiobook needs TWICE the free space and
+                    // takes twice as long. The copy is the fallback for the
+                    // one case a rename cannot cover: another volume.
+                    if (!body.file.renameTo(target)) {
+                        body.file.copyTo(target, overwrite = true)
+                        body.file.delete()
+                    }
                 }.isSuccess
             }
             if (!landed) return LocalSendResponse.status(500)

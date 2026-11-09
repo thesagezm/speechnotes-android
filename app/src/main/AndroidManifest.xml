@@ -16,11 +16,18 @@
     <!-- BookDrop speaks the LocalSend v2.2 protocol: plain HTTP on the LAN
          by design (no TLS between trusted peers). The receiver's raw sockets
          bypass the platform cleartext policy; the sender's OkHttp needs the
-         usesCleartextTraffic flag below. -->
+         usesCleartextTraffic flag below. Migration queued: move the sender
+         to raw sockets and drop this flag (see QUEUE.md). -->
+    <!-- Platform backup / device transfer are OFF (backup_rules.xml +
+         data_extraction_rules.xml): the notes live in app-private storage
+         and are either plaintext (vault off — must not leave the device)
+         or sealed with a device-bound key (vault on — unrestorable
+         elsewhere). The sanctioned backup is Settings -> Backup (.jex). -->
     <application
         android:name=".SpeechnotesApplication"
-        android:allowBackup="true"
-        android:fullBackupContent="true"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"

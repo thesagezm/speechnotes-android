@@ -141,8 +141,9 @@ object AudiobookChapters {
                 "trak" -> traks.add(payload)
             }
         }
-        if (chplPayload != null) {
-            val chapters = parseChpl(data.copyOfRange(chplPayload!!.first, chplPayload!!.last + 1), totalSeconds)
+        val chpl = chplPayload
+        if (chpl != null) {
+            val chapters = parseChpl(data.copyOfRange(chpl.first, chpl.last + 1), totalSeconds)
             if (chapters.isNotEmpty()) return chapters
         }
         // No `chpl` (or it failed validation): try a real chapter track — a

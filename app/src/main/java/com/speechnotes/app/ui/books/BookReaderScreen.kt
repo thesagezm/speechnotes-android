@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -212,6 +213,10 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
     // shell webview (iOS reloadToken parity). The veil covers the rebuild.
     var reloadToken by remember(book.id) { mutableStateOf(0) }
     var lastCfi by remember(book.id) { mutableStateOf(book.cfi) }
+    // iOS bookBarMinimized parity: the portrait transport collapses to the
+    // shared pill (MinimizedBookTransport), and the chapter bar goes with it
+    // — its steppers ride the pill, so the chapter text gets the space back.
+    val barMinimized = com.speechnotes.app.ui.playback.rememberBookBarMinimized(vm)
 
     // E1: reading-time tracking while THIS reader is on screen
     // (BookReaderView.swift's readingRecorder parity).
@@ -285,9 +290,13 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
     }
 
     Scaffold(
+        // The outer reader Scaffold owns the status/navigation insets. The
+        // inner EPUB chrome is nested inside that safe area, so applying the
+        // defaults here added a second top and bottom system inset.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             AnimatedVisibility(
-                visible = !chromeHidden,
+                visible = !chromeHidden && !barMinimized.value,
                 enter = expandVertically(),
                 exit = shrinkVertically(),
             ) {
@@ -306,16 +315,38 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                 enter = expandVertically(),
                 exit = shrinkVertically(),
             ) {
-                EpubReaderBottomBar(
-                    vm = vm,
-                    book = book,
-                    currentChapter = currentChapter,
-                    playControlsVisible = !landscape,
-                    onShowToc = { showToc = true },
-                    onShowAppearance = { showAppearance = true },
-                    onFontDown = { vm.setReaderFontSize((appearance.fontSize - 10).coerceAtLeast(70)) },
-                    onFontUp = { vm.setReaderFontSize((appearance.fontSize + 10).coerceAtMost(200)) },
-                )
+                if (barMinimized.value) {
+                    // The collapsed transport (iOS MinimizedBookTransport):
+                    // play, the chapter steppers the hidden chapter bar
+                    // carried, the progress readout and the expand chevron.
+                    com.speechnotes.app.ui.playback.MinimizedPlaybackPill(
+                        isPlaying = narratingThis && playState == SpeechState.SPEAKING,
+                        isGenerating = narratingThis && playState == SpeechState.GENERATING,
+                        isPlayEnabled = true,
+                        progressText = compactProgressLabel(playProgress, narratingThis && playState == SpeechState.GENERATING),
+                        onTogglePlay = {
+                            if (narratingThis) vm.player.toggle()
+                            else vm.toggleBookChapter(book, currentChapter, fraction = book.positionFraction)
+                        },
+                        onExpand = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, false) },
+                        onStepBack = { goChapter(webViewRef, currentChapter - 1) },
+                        onStepForward = { goChapter(webViewRef, currentChapter + 1) },
+                        stepBackEnabled = currentChapter > 0,
+                        stepForwardEnabled = spineCount <= 0 || currentChapter < spineCount - 1,
+                    )
+                } else {
+                    EpubReaderBottomBar(
+                        vm = vm,
+                        book = book,
+                        currentChapter = currentChapter,
+                        playControlsVisible = !landscape,
+                        onMinimize = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, true) },
+                        onShowToc = { showToc = true },
+                        onShowAppearance = { showAppearance = true },
+                        onFontDown = { vm.setReaderFontSize((appearance.fontSize - 10).coerceAtLeast(70)) },
+                        onFontUp = { vm.setReaderFontSize((appearance.fontSize + 10).coerceAtMost(200)) },
+                    )
+                }
             }
         },
     ) { padding ->
@@ -556,6 +587,17 @@ private fun EpubChapterBar(
 }
 
 /**
+ * The collapsed pill's readout — the bare percentage, iOS
+ * `BookPlayerBar.compactProgressLabel` parity. "Preparing…" while the
+ * engine renders, "Paused" when a session exists but nothing is sounding.
+ */
+private fun compactProgressLabel(progress: Double?, isGenerating: Boolean): String = when {
+    isGenerating -> "Preparing…"
+    progress != null -> "${(progress * 100).toInt()}%"
+    else -> "Paused"
+}
+
+/**
  * The reader's transport row. The listen button mirrors the SpeechPlayer
  * state for THIS book — pause/resume/stop while narrating, play otherwise —
  * instead of a static Play icon that silently re-narrated the chapter.
@@ -566,6 +608,7 @@ private fun EpubReaderBottomBar(
     book: Book,
     currentChapter: Int,
     playControlsVisible: Boolean,
+    onMinimize: () -> Unit,
     onShowToc: () -> Unit,
     onShowAppearance: () -> Unit,
     onFontDown: () -> Unit,
@@ -585,19 +628,27 @@ private fun EpubReaderBottomBar(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onShowToc) {
-                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Contents")
+            // 40dp targets: seven controls (contents, appearance, A-, A+,
+            // play, stop, minimise) at the stock 48dp overflowed a 360dp
+            // screen once the Stop button joined during narration and pushed
+            // the minimise chevron off the right edge.
+            IconButton(onClick = onShowToc, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Contents", modifier = Modifier.size(20.dp))
             }
-            IconButton(onClick = onShowAppearance) {
-                Icon(Icons.Default.FormatSize, contentDescription = "Appearance")
+            IconButton(onClick = onShowAppearance, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Default.FormatSize, contentDescription = "Appearance", modifier = Modifier.size(20.dp))
             }
-            IconButton(onClick = onFontDown) { Text("A-", style = MaterialTheme.typography.titleSmall) }
-            IconButton(onClick = onFontUp) { Text("A+", style = MaterialTheme.typography.titleSmall) }
+            IconButton(onClick = onFontDown, modifier = Modifier.size(40.dp)) {
+                Text("A-", style = MaterialTheme.typography.titleSmall)
+            }
+            IconButton(onClick = onFontUp, modifier = Modifier.size(40.dp)) {
+                Text("A+", style = MaterialTheme.typography.titleSmall)
+            }
             if (playControlsVisible) {
             FilledIconButton(onClick = {
                 if (narratingThis) vm.player.toggle()
                 else vm.toggleBookChapter(book, currentChapter, fraction = book.positionFraction)
-            }) {
+            }, modifier = Modifier.size(40.dp)) {
                 Icon(
                     when {
                         narratingThis && playState == SpeechState.SPEAKING -> Icons.Default.Pause
@@ -609,12 +660,22 @@ private fun EpubReaderBottomBar(
                         narratingThis -> "Cancel narration"
                         else -> "Listen from here"
                     },
+                    modifier = Modifier.size(20.dp),
                 )
             }
             if (narratingThis && playState != SpeechState.GENERATING) {
-                IconButton(onClick = { vm.player.stop() }) {
-                    Icon(Icons.Default.Stop, contentDescription = "Stop narration")
+                IconButton(onClick = { vm.player.stop() }, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.Default.Stop, contentDescription = "Stop narration", modifier = Modifier.size(20.dp))
                 }
+            }
+            // Collapse the transport to the slim pill — iOS
+            // BookPlayerBar's chevron.down (bookBarMinimized).
+            IconButton(onClick = onMinimize, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Minimize playback controls",
+                    modifier = Modifier.size(20.dp),
+                )
             }
             }
         }
@@ -872,6 +933,9 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
     val playProgress by vm.player.progress.collectAsState()
     val playRate by vm.player.rateMultiplier.collectAsState()
     var showVoicePickerPdf by remember { mutableStateOf(false) }
+    // iOS bookBarMinimized parity: the portrait page/transport bar collapses
+    // to the shared pill and the page gets the space back.
+    val barMinimized = com.speechnotes.app.ui.playback.rememberBookBarMinimized(vm)
     val bitmaps = remember(book.id) { mutableStateMapOf<Int, android.graphics.Bitmap>() }
     // PDDocument.load OFF the main thread (P0-5): parsing a large or scanned
     // PDF can take seconds — this used to run inside remember{} synchronously,
@@ -1040,6 +1104,30 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
         // minimum, so the LAST children (play, next-page) were measured off
         // the right edge and never drawn. That is why page turning was only
         // reachable through the slider.
+        //
+        // Collapsed (iOS bookBarMinimized): the page bar goes away and the
+        // slim pill takes over — its steppers are the page steppers, so page
+        // turning stays one tap away while the page gets the space back.
+        if (barMinimized.value) {
+            com.speechnotes.app.ui.playback.MinimizedPlaybackPill(
+                isPlaying = narratingThis && playState == SpeechState.SPEAKING,
+                isGenerating = narratingThis && playState == SpeechState.GENERATING,
+                isPlayEnabled = true,
+                progressText = compactProgressLabel(playProgress, narratingThis && playState == SpeechState.GENERATING),
+                onTogglePlay = {
+                    if (narratingThis) vm.player.toggle()
+                    else {
+                        val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
+                        vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
+                    }
+                },
+                onExpand = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, false) },
+                onStepBack = { if (pageIndex > 0) pageIndex-- },
+                onStepForward = { if (pageIndex < pageCount - 1) pageIndex++ },
+                stepBackEnabled = pageIndex > 0,
+                stepForwardEnabled = pageCount > 0 && pageIndex < pageCount - 1,
+            )
+        } else {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -1061,14 +1149,15 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
                     .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { showOutline = true }) {
-                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Contents")
+                IconButton(onClick = { showOutline = true }, modifier = Modifier.size(40.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Contents", modifier = Modifier.size(20.dp))
                 }
                 FilledTonalIconButton(
                     onClick = { if (pageIndex > 0) pageIndex-- },
                     enabled = pageIndex > 0,
+                    modifier = Modifier.size(40.dp),
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous page")
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous page", modifier = Modifier.size(20.dp))
                 }
                 Text(
                     "Page ${pageIndex + 1} of $pageCount",
@@ -1085,8 +1174,9 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
                 FilledTonalIconButton(
                     onClick = { if (pageIndex < pageCount - 1) pageIndex++ },
                     enabled = pageIndex < pageCount - 1,
+                    modifier = Modifier.size(40.dp),
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next page")
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next page", modifier = Modifier.size(20.dp))
                 }
                 if (!landscape) FilledIconButton(onClick = {
                     // Pause/resume the ongoing narration; start the chain for
@@ -1098,7 +1188,7 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
                         val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
                         vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
                     }
-                }) {
+                }, modifier = Modifier.size(40.dp)) {
                     Icon(
                         when {
                             narratingThis && playState == SpeechState.SPEAKING -> Icons.Default.Pause
@@ -1110,16 +1200,33 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
                             narratingThis -> "Cancel narration"
                             else -> "Listen from this page"
                         },
+                        modifier = Modifier.size(20.dp),
                     )
                 }
                 // The thin in-button spinner was near-invisible on device; the
                 // Stop glyph during GENERATING (tap = cancel) reads clearly.
                 if (narratingThis && playState != SpeechState.GENERATING && !landscape) {
-                    IconButton(onClick = { vm.player.stop() }) {
-                        Icon(Icons.Default.Stop, contentDescription = "Stop narration")
+                    IconButton(onClick = { vm.player.stop() }, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Stop, contentDescription = "Stop narration", modifier = Modifier.size(20.dp))
+                    }
+                }
+                // Collapse the transport to the slim pill — iOS
+                // BookPlayerBar's chevron.down (bookBarMinimized). Portrait
+                // only: in landscape the trailing rail owns the collapse.
+                if (!landscape) {
+                    IconButton(
+                        onClick = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, true) },
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Minimize playback controls",
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
                 }
             }
+        }
         }
         }
         if (landscape) {
@@ -1270,6 +1377,10 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
 
     fun startPlayback(index: Int, offsetMs: Long) = audio.play(book, index, offsetMs)
 
+    // iOS bookBarMinimized parity: the portrait transport collapses to the
+    // shared pill and the cover gets its space back.
+    val barMinimized = com.speechnotes.app.ui.playback.rememberBookBarMinimized(vm)
+
     // Landscape: the rail carries the transport (iOS PlaybackRail).
     val landscape = com.speechnotes.app.ui.playback.isLandscape()
 
@@ -1304,6 +1415,36 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(8.dp))
+                if (barMinimized.value) {
+                    // Collapsed transport (iOS MinimizedBookTransport): the
+                    // cover gets its space back while the book plays, and the
+                    // chapter steppers ride the pill — the same preference
+                    // the EPUB and PDF readers use.
+                    com.speechnotes.app.ui.playback.MinimizedPlaybackPill(
+                        isPlaying = isActive && playing,
+                        isGenerating = false,
+                        isPlayEnabled = true,
+                        progressText = compactProgressLabel(
+                            if (shownDuration > 0) positionMs.toDouble() / shownDuration else null,
+                            false,
+                        ),
+                        onTogglePlay = {
+                            if (isActive) audio.togglePlay()
+                            else startPlayback(chapterIndex, vm.savedAudioOffsetMs(book))
+                        },
+                        onExpand = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, false) },
+                        onStepBack = {
+                            val prev = (chapterIndex - 1).coerceAtLeast(0)
+                            startPlayback(prev, 0)
+                        },
+                        onStepForward = {
+                            val next = (chapterIndex + 1).coerceAtMost((chapters.size - 1).coerceAtLeast(0))
+                            startPlayback(next, 0)
+                        },
+                        stepBackEnabled = chapterIndex > 0,
+                        stepForwardEnabled = chapters.isEmpty() || chapterIndex < chapters.size - 1,
+                    )
+                } else {
                 Slider(
                     value = if (shownDuration > 0) (positionMs.toFloat() / shownDuration).coerceIn(0f, 1f) else 0f,
                     onValueChange = { fraction ->
@@ -1318,34 +1459,49 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
                     Text(formatClock(shownDuration), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { if (isActive) audio.seekByMs(-15_000L) else startPlayback(chapterIndex, 0) }) {
+                // Seven controls at the stock 48dp (14dp gaps) needed 358dp
+                // of a 328dp-wide row: the sleep timer was measured off the
+                // right edge and never drawn. 40dp targets and 4dp gaps fit
+                // all seven on a 360dp screen.
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { if (isActive) audio.seekByMs(-15_000L) else startPlayback(chapterIndex, 0) },
+                        modifier = Modifier.size(40.dp),
+                    ) {
                         com.speechnotes.app.ui.playback.SkipSecondsIcon(seconds = 15, forward = false)
                     }
                     IconButton(onClick = {
                         val prev = (chapterIndex - 1).coerceAtLeast(0)
                         startPlayback(prev, 0)
-                    }) { Icon(Icons.Default.SkipPrevious, contentDescription = "Previous chapter") }
+                    }, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.SkipPrevious, contentDescription = "Previous chapter", modifier = Modifier.size(20.dp))
+                    }
                     FilledIconButton(onClick = {
                         if (isActive) audio.togglePlay()
                         else startPlayback(chapterIndex, vm.savedAudioOffsetMs(book))
-                    }) {
+                    }, modifier = Modifier.size(40.dp)) {
                         Icon(
                             if (isActive && playing) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = if (isActive && playing) "Pause" else "Play",
+                            modifier = Modifier.size(20.dp),
                         )
                     }
                     IconButton(onClick = {
                         val next = (chapterIndex + 1).coerceAtMost((chapters.size - 1).coerceAtLeast(0))
                         startPlayback(next, 0)
-                    }) { Icon(Icons.Default.SkipNext, contentDescription = "Next chapter") }
-                    IconButton(onClick = { if (isActive) audio.seekByMs(15_000L) }) {
+                    }, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.SkipNext, contentDescription = "Next chapter", modifier = Modifier.size(20.dp))
+                    }
+                    IconButton(
+                        onClick = { if (isActive) audio.seekByMs(15_000L) },
+                        modifier = Modifier.size(40.dp),
+                    ) {
                         com.speechnotes.app.ui.playback.SkipSecondsIcon(seconds = 15, forward = true)
                     }
                     Box {
                         var sleepMenu by remember { mutableStateOf(false) }
-                        IconButton(onClick = { sleepMenu = true }) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = "Sleep timer")
+                        IconButton(onClick = { sleepMenu = true }, modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = "Sleep timer", modifier = Modifier.size(20.dp))
                         }
                         DropdownMenu(expanded = sleepMenu, onDismissRequest = { sleepMenu = false }) {
                             listOf(0, 5, 15, 30, 60).forEach { minutes ->
@@ -1358,6 +1514,20 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
                                     },
                                 )
                             }
+                        }
+                    }
+                    // Collapse the transport to the slim pill — iOS
+                    // BookAudioReaderView's chevron.down (bookBarMinimized).
+                    if (!landscape) {
+                        IconButton(
+                            onClick = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, true) },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Minimize playback controls",
+                                modifier = Modifier.size(20.dp),
+                            )
                         }
                     }
                 }
@@ -1377,6 +1547,7 @@ private fun AudioReader(vm: SpeechnotesViewModel, book: Book) {
                             .padding(horizontal = 8.dp),
                     )
                     Text("%.2f×".format(speed), style = MaterialTheme.typography.labelMedium)
+                }
                 }
             }
         }

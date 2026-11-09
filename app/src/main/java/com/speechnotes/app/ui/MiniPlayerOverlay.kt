@@ -377,7 +377,14 @@ private fun AudioBookMiniBar(
         tonalElevation = 3.dp,
     ) {
         Row(
-            Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            Modifier
+                // The WHOLE bar is the jump target: iOS puts
+                // `.contentShape(Rectangle()).onTapGesture` on the bar body
+                // (AudioBookMiniPlayerBar.swift), so a tap in the free space
+                // next to the title opens the book. The transport buttons
+                // below are children and keep their own clicks.
+                .clickable(onClick = onTap)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (book.hasCover) {
@@ -490,7 +497,16 @@ private fun MiniPlayerBar(
                 )
                 Spacer(Modifier.height(6.dp))
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier
+                    // The free space of the bar is the jump target (iOS
+                    // MiniPlayerBar.swift: the bar body carries the tap
+                    // gesture). The title keeps its own clickable so the
+                    // gesture reads as "open this" there too.
+                    .clickable(onClick = onTap)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 val speaking = state == SpeechState.SPEAKING
                 val generating = state == SpeechState.GENERATING
                 // While GENERATING the tap CANCELS (SpeechPlayer.togglePlay
@@ -675,7 +691,14 @@ private fun ExportMiniBar(
                 LinearProgressIndicator(progress = { progress.toFloat() }, modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(6.dp))
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier
+                    // Same as the other bars: the free space jumps to the
+                    // exported-audio list (iOS ExportMiniPlayerBar.swift).
+                    .clickable(onClick = onTap)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Button(onClick = onTogglePlay) {
                     Icon(
                         if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,

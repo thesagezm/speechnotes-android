@@ -18,6 +18,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -51,8 +53,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.HorizontalRule
-import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material3.Switch
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
@@ -95,6 +100,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -102,6 +109,7 @@ import androidx.compose.ui.unit.sp
 import com.speechnotes.app.data.SpeechnotesViewModel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.speechnotes.app.logic.MarkdownFormatActions
 import com.speechnotes.app.logic.MarkdownSlashMenu
 import com.speechnotes.app.logic.NotePdfLayout
 import com.speechnotes.app.logic.SpeechText
@@ -118,7 +126,22 @@ import java.io.File
  * [draft] is the committed text; every button mutates it, then hands the
  * full (text, caret, selection) triple back so the caller's draft state
  * updates in one shot — no partially-updated intermediate states.
+ * SELECTION CONVENTION: [selection] is an IntRange whose `last` is the
+ * EXCLUSIVE end — that is what Compose's `TextRange.end` is, and that is
+ * what the editor hands over. The old code read it as an INCLUSIVE end in
+ * every selection-reading path, which (a) duplicated the character right
+ * after the selection, (b) replaced a selection that touched the end of the
+ * note with the placeholder word, and (c) CRASHED the list/quote buttons on
+ * that same selection — `substring` past the end of the text.
+ *
+ * LAYOUT: the actions WRAP onto a second row instead of scrolling
+ * sideways. iOS uses a horizontal ScrollView, but on a 360dp phone that
+ * hides eight of the thirteen actions behind a scroll nobody discovers —
+ * the user's "the formatting toolbar has to fit narrow screens". Wrapping
+ * keeps every action reachable, and on a wide screen it still lays out as
+ * a single row.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MarkdownFormattingBar(
     draft: String,
@@ -130,104 +153,83 @@ fun MarkdownFormattingBar(
 ) {
     val haptics = LocalHapticFeedback.current
 
-    fun mutate(range: IntRange, replacement: String) {
-        val start = range.first.coerceIn(0, draft.length)
-        val end = range.last.coerceIn(start, draft.length)
-        val updated = draft.substring(0, start) + replacement + draft.substring(end)
-        val caret = (start + replacement.length).coerceAtMost(updated.length)
-        onEdit(updated, caret, caret until caret)
+    /** Every action ticks once (iOS `Haptics.tap()`) — feedback must land
+     *  on the tap, not after the text has been rewritten. */
+    fun tap(action: () -> Unit) {
+        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        action()
     }
 
-    fun wrap(prefix: String, suffix: String, placeholder: String) {
-        val range = selection ?: (caretOffset..(caretOffset - 1))
-        val selected = if (range.first <= range.last && range.last + 1 <= draft.length) {
-            draft.substring(range.first, range.last + 1)
-        } else ""
-        val body = selected.ifBlank { placeholder }
-        mutate(range.first..range.last, "$prefix$body$suffix")
+    /**
+     * Commit one action's result in ONE edit (iOS's single-mutate contract;
+     * see [com.speechnotes.app.logic.MarkdownFormatActions] for why the
+     * selection convention matters).
+     */
+    fun commit(result: MarkdownFormatActions.Result) {
+        onEdit(result.text, result.caret, result.selection)
     }
 
-    fun stripBarLineSelection(): Pair<Int, Int> {
-        // Caret falls back to line start; selection stays untouched.
-        val caret = caretOffset.coerceIn(0, draft.length)
-        val lineStart = draft.lastIndexOf('\n', startIndex = (caret - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
-        val lineEnd = draft.indexOf('\n', startIndex = caret).let { if (it < 0) draft.length else it }
-        return lineStart to lineEnd
-    }
+    fun mutate(range: IntRange, replacement: String) =
+        commit(MarkdownFormatActions.mutate(draft, range, replacement))
 
-    fun applyHeading(level: Int) {
-        val (lineStart, lineEnd) = stripBarLineSelection()
-        val line = draft.substring(lineStart, lineEnd)
-        val newLine = when {
-            line.startsWith("# ") && level == 1 -> line
-            line.startsWith("## ") && level == 2 -> line
-            else -> "#".repeat(level) + " " + line
-        }
-        mutate(lineStart until lineEnd, newLine)
-        val caretShift = newLine.length - line.length
-        onEdit(draft, caretOffset + caretShift, (caretOffset + caretShift)..(caretOffset + caretShift))
-    }
+    /** Wrap the selection (or insert a placeholder) with the markers. */
+    fun wrap(prefix: String, suffix: String, placeholder: String) =
+        commit(MarkdownFormatActions.wrap(draft, caretOffset, selection, prefix, suffix, placeholder))
 
-    fun applyList(marker: String) {
-        if (selection != null) {
-            val selected = draft.substring(selection.first, selection.last + 1)
-            val lines = selected.split('\n')
-            val allPrefixed = lines.all { it.startsWith(marker) }
-            val mutated = lines.joinToString("\n") { if (allPrefixed) it.removePrefix(marker) else marker + it }
-            mutate(selection, mutated)
-        } else {
-            val (lineStart, lineEnd) = stripBarLineSelection()
-            val line = draft.substring(lineStart, lineEnd)
-            val newLine = if (line.startsWith(marker)) line.removePrefix(marker) else marker + line
-            mutate(lineStart until lineEnd, newLine)
-        }
-    }
+    /** Toggle the heading marker on the caret's line. */
+    fun applyHeading(level: Int) = commit(MarkdownFormatActions.applyHeading(draft, caretOffset, level))
 
-    Row(
+    /** Toggle the marker on every line of the selection, or on the caret's line. */
+    fun applyList(marker: String) =
+        commit(MarkdownFormatActions.applyList(draft, caretOffset, selection, marker))
+
+    FlowRow(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 8.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        FormatButton(if (selectedTextWrapped(draft, selection, "**")) "off" else "on", 'B', "Bold", { wrap("**", "**", "bold") }, enabled)
-        FormatButton(if (selectedTextWrapped(draft, selection, "*")) "off" else "on", 'I', "Italic", { wrap("*", "*", "italic") }, enabled)
-        FormatButton(if (selectedTextWrapped(draft, selection, "~~")) "off" else "on", 'S', "Strikethrough", { wrap("~~", "~~", "strike") }, enabled)
+        FormatButton(if (MarkdownFormatActions.isWrapped(draft, selection, "**")) "off" else "on", 'B', "Bold", { tap { wrap("**", "**", "bold") } }, enabled)
+        FormatButton(if (MarkdownFormatActions.isWrapped(draft, selection, "*")) "off" else "on", 'I', "Italic", { tap { wrap("*", "*", "italic") } }, enabled)
+        FormatButton(if (MarkdownFormatActions.isWrapped(draft, selection, "~~")) "off" else "on", 'S', "Strikethrough", { tap { wrap("~~", "~~", "strike") } }, enabled)
         FormatDivider()
-        FormatTextButton("H1", enabled) { applyHeading(1) }
-        FormatTextButton("H2", enabled) { applyHeading(2) }
+        FormatTextButton("H1", enabled) { tap { applyHeading(1) } }
+        FormatTextButton("H2", enabled) { tap { applyHeading(2) } }
         FormatDivider()
-        FormatIconButton(Icons.Filled.FormatListBulleted, "Bulleted list", enabled) { applyList("- ") }
-        FormatIconButton(Icons.Filled.FormatListNumbered, "Numbered list", enabled) { applyList("1. ") }
-        FormatIconButton(Icons.Filled.FormatQuote, "Block quote", enabled) { applyList("> ") }
+        FormatIconButton(Icons.Filled.FormatListBulleted, "Bulleted list", enabled) { tap { applyList("- ") } }
+        FormatIconButton(Icons.Filled.FormatListNumbered, "Numbered list", enabled) { tap { applyList("1. ") } }
+        FormatIconButton(Icons.Filled.FormatQuote, "Block quote", enabled) { tap { applyList("> ") } }
         FormatDivider()
-        FormatIconButton(Icons.Filled.Code, "Inline code", enabled) { wrap("`", "`", "code") }
+        FormatIconButton(Icons.Filled.Code, "Inline code", enabled) { tap { wrap("`", "`", "code") } }
         FormatIconButton(Icons.Filled.DataObject, "Code block", enabled) {
-            val selected = selection?.let { if (it.first <= it.last && it.last + 1 <= draft.length) draft.substring(it.first, it.last + 1) else "" }.orEmpty()
-            val body = selected.ifBlank { "code" }
-            mutate(selection ?: (caretOffset..(caretOffset - 1)), "\n```\n$body\n```\n")
+            tap {
+                val body = MarkdownFormatActions.selectedText(draft, selection).ifBlank { "code" }
+                val range = selection ?: (caretOffset..caretOffset)
+                mutate(range, "\n```\n$body\n```\n")
+            }
         }
         FormatIconButton(Icons.Filled.HorizontalRule, "Horizontal rule", enabled) {
-            mutate((caretOffset..(caretOffset - 1)), "\n---\n")
+            tap { mutate(caretOffset..caretOffset, "\n---\n") }
         }
         FormatDivider()
         FormatIconButton(Icons.Filled.Link, "Insert link", enabled) {
-            val sel = selection ?: (caretOffset..(caretOffset - 1))
-            val selected = if (sel.first <= sel.last && sel.last + 1 <= draft.length) draft.substring(sel.first, sel.last + 1) else ""
-            val label = selected.ifBlank { "label" }
-            mutate(sel, "[$label](https://)")
+            tap {
+                val range = selection ?: (caretOffset..caretOffset)
+                val label = MarkdownFormatActions.selectedText(draft, selection).ifBlank { "label" }
+                mutate(range, "[$label](https://)")
+            }
         }
-        FormatIconButton(Icons.Filled.Image, "Insert image", enabled) { onInsertImage() }
+        FormatIconButton(Icons.Filled.Image, "Insert image", enabled) { tap { onInsertImage() } }
     }
 }
 
 /** True when the selected text is already wrapped by [marker] on both ends. */
 private fun selectedTextWrapped(text: String, selection: IntRange?, marker: String): Boolean {
     val sel = selection ?: return false
-    if (sel.first < marker.length || sel.last + 1 + marker.length > text.length) return false
+    if (sel.first < marker.length || sel.last + marker.length > text.length) return false
     return text.substring(sel.first - marker.length, sel.first) == marker &&
-        text.substring(sel.last + 1, sel.last + 1 + marker.length) == marker
+        text.substring(sel.last, sel.last + marker.length) == marker
 }
 
 @Composable
@@ -438,13 +440,13 @@ fun NoteEditorScreen(
                     showImageSourceMenu = false
                     val clipboard = vm.context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
                     val clip = clipboard?.primaryClip?.takeIf { it.itemCount > 0 }
-                    val hasImage = clip != null && (clip.description.hasMimeType("image/*") ||
-                        clip.getItemAt(0).uri != null)
-                    if (!hasImage) {
+                    val item = clip?.getItemAt(0)
+                    val hasImage = clip != null &&
+                        (clip.description.hasMimeType("image/*") || item?.uri != null)
+                    if (!hasImage || item == null) {
                         vm.showToast("The clipboard has no image.")
                         return@Button
                     }
-                    val item = clip!!.getItemAt(0)
                     vm.appScope.launch {
                         val bytes = withContext(kotlinx.coroutines.Dispatchers.IO) {
                             runCatching {
@@ -681,63 +683,72 @@ fun NoteEditorScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .windowInsetsPadding(WindowInsets.statusBars)
-                        .height(64.dp)
+                        .height(56.dp)
                         .padding(start = 4.dp, end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
-                    androidx.compose.foundation.text.BasicTextField(
-                        value = titleDraft,
-                        onValueChange = { titleDraft = it },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.titleMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurface,
-                        ),
-                        cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.weight(1f),
-                        decorationBox = { inner ->
-                            Box {
-                                if (titleDraft.isEmpty()) {
-                                    Text(
-                                        note?.title?.takeIf { it.isNotBlank() } ?: "Title",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                    )
+                    // Title and stats share one flexible column. Keeping the
+                    // stats in the Row as a fixed-width action squeezed the
+                    // title to nothing on a phone-width window.
+                    Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = titleDraft,
+                            onValueChange = { titleDraft = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.titleMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth(),
+                            decorationBox = { inner ->
+                                Box {
+                                    if (titleDraft.isEmpty()) {
+                                        Text(
+                                            note?.title?.takeIf { it.isNotBlank() } ?: "Title",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    inner()
                                 }
-                                inner()
+                            },
+                        )
+                        Text(
+                            draftStats,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
+                    // Render Markdown / Edit-Preview lives here, not only in
+                    // Settings. Enabling the setting from this note enters
+                    // the rendered preview immediately; the pencil returns
+                    // to editing without changing the user's preference.
+                    IconButton(
+                        onClick = {
+                            com.speechnotes.app.ui.theme.Haptics.tap(vm.context)
+                            if (renderMarkdown) showPreview = !showPreview
+                            else {
+                                vm.renderMarkdown = true
+                                showPreview = true
                             }
                         },
-                    )
-                    // Word count lives under the title instead of beside it:
-                    // as a bar action it was the widest fixed item and
-                    // squeezed the field to nothing.
-                    Text(
-                        draftStats,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .widthIn(max = 132.dp)
-                            .padding(start = 8.dp),
-                    )
-                    // Edit/Preview toggle (iOS NoteEditorView toolbar model):
-                    // the preview was reachable but never escapable — a
-                    // visible toggle in the chrome is the way back.
-                    if (renderMarkdown) {
-                        IconButton(onClick = {
-                            com.speechnotes.app.ui.theme.Haptics.tap(vm.context)
-                            showPreview = !showPreview
-                        }) {
-                            Icon(
-                                if (showPreview) Icons.Default.Edit else Icons.Default.Visibility,
-                                contentDescription = if (showPreview) "Edit note" else "Preview markdown",
-                            )
-                        }
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            if (showPreview) Icons.Default.Edit else Icons.Default.Visibility,
+                            contentDescription = when {
+                                !renderMarkdown -> "Render markdown"
+                                showPreview -> "Edit note"
+                                else -> "Preview markdown"
+                            },
+                        )
                     }
                     // Speak: tap toggles play/pause; LONG-PRESS starts reading
                     // from the caret (R3 playFrom — the "start reading here"
@@ -747,7 +758,7 @@ fun NoteEditorScreen(
                     val speechCanPlay = playerState != SpeechState.IDLE || cachedSpeechText.isNotBlank()
                     Box(
                         Modifier
-                            .size(48.dp)
+                            .size(40.dp)
                             .combinedClickable(
                                 enabled = speechCanPlay,
                                 onClick = {
@@ -780,10 +791,23 @@ fun NoteEditorScreen(
                         }
                     }
                     Box {
-                        IconButton(onClick = { showOverflow = true }) {
+                        IconButton(onClick = { showOverflow = true }, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.MoreVert, contentDescription = "More actions")
                         }
                         DropdownMenu(expanded = showOverflow, onDismissRequest = { showOverflow = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Render markdown") },
+                                leadingIcon = { Icon(Icons.Default.Visibility, contentDescription = null) },
+                                trailingIcon = {
+                                    Switch(checked = renderMarkdown, onCheckedChange = null)
+                                },
+                                onClick = {
+                                    showOverflow = false
+                                    val enabled = !renderMarkdown
+                                    vm.renderMarkdown = enabled
+                                    showPreview = enabled
+                                },
+                            )
                             DropdownMenuItem(
                                 text = { Text("Share…") },
                                 leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
@@ -812,12 +836,23 @@ fun NoteEditorScreen(
                             enabled = !showPreview,
                             onInsertImage = { showImageSourceMenu = true },
                             onEdit = { newText, newCaret, newSelection ->
-                                draft = TextFieldValue(
-                                    newText,
-                                    selection = newSelection?.let { androidx.compose.ui.text.TextRange(it.first, it.last + 1) }
-                                        ?: androidx.compose.ui.text.TextRange(newCaret.coerceIn(0, newText.length)),
+                                // newSelection is an UTF-16 range with an
+                                // EXCLUSIVE end (MarkdownFormatActions' own
+                                // convention), so it maps to a TextRange
+                                // VERBATIM. The old `it.last + 1` turned a
+                                // collapsed range into a one-character
+                                // selection: after every formatting tap the
+                                // next keystroke replaced a character
+                                // instead of typing at the caret.
+                                val selection = newSelection
+                                    ?: (newCaret.coerceIn(0, newText.length))..
+                                        (newCaret.coerceIn(0, newText.length))
+                                val textRange = androidx.compose.ui.text.TextRange(
+                                    selection.first.coerceIn(0, newText.length),
+                                    selection.last.coerceIn(0, newText.length),
                                 )
-                                selectionUTF16 = newSelection ?: (newCaret..newCaret)
+                                draft = TextFieldValue(newText, selection = textRange)
+                                selectionUTF16 = selection
                             },
                         )
                     }
@@ -1017,15 +1052,21 @@ private fun renderNotePdf(title: String, markdown: String): File? = runCatching 
     val document = android.graphics.pdf.PdfDocument()
     var pageNumber = 0
     var page: android.graphics.pdf.PdfDocument.Page? = null
-    fun ensurePage() {
-        if (page == null) {
-            pageNumber += 1
-            page = document.startPage(
-                android.graphics.pdf.PdfDocument.PageInfo
-                    .Builder(NotePdfLayout.PAGE_WIDTH.toInt(), NotePdfLayout.PAGE_HEIGHT.toInt(), pageNumber)
-                    .create(),
-            )
-        }
+
+    /** Starts a page when none is open and returns the page to draw on.
+     *  Returning it (instead of reading the nullable field back with `!!`)
+     *  keeps every caller null-safe by construction. */
+    fun ensurePage(): android.graphics.pdf.PdfDocument.Page {
+        val open = page
+        if (open != null) return open
+        pageNumber += 1
+        val started = document.startPage(
+            android.graphics.pdf.PdfDocument.PageInfo
+                .Builder(NotePdfLayout.PAGE_WIDTH.toInt(), NotePdfLayout.PAGE_HEIGHT.toInt(), pageNumber)
+                .create(),
+        )
+        page = started
+        return started
     }
     val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
     for (op in measuredOps) {
@@ -1047,16 +1088,15 @@ private fun renderNotePdf(title: String, markdown: String): File? = runCatching 
                     },
                     android.graphics.Typeface.NORMAL,
                 )
-                page!!.canvas.drawText(op.text, op.x, op.baselineY, paint)
+                ensurePage().canvas.drawText(op.text, op.x, op.baselineY, paint)
             }
             is NotePdfLayout.Op.Rule -> {
-                ensurePage()
-                page!!.canvas.drawLine(op.x1, op.y, op.x2, op.y, paint.apply { strokeWidth = 1f })
+                ensurePage().canvas.drawLine(op.x1, op.y, op.x2, op.y, paint.apply { strokeWidth = 1f })
             }
         }
     }
     page?.let { document.finishPage(it) }
-    if (pageNumber == 0) ensurePage().also { page?.let { p -> document.finishPage(p) } }
+    if (pageNumber == 0) document.finishPage(ensurePage())
     file.outputStream().use { out -> document.writeTo(out) }
     document.close()
     file
@@ -1346,94 +1386,117 @@ private fun PlayerControlsBar(
     val voiceDescription = vm.player.currentVoiceDescription
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     val hasResume = vm.player.hasResumeBookmark(note?.id)
+    val preferences = remember {
+        vm.context.getSharedPreferences("speechnotes", android.content.Context.MODE_PRIVATE)
+    }
+    var minimized by remember(note?.id) {
+        mutableStateOf(preferences.getBoolean("editorBarMinimized", false))
+    }
+
+    fun setMinimized(value: Boolean) {
+        minimized = value
+        preferences.edit().putBoolean("editorBarMinimized", value).apply()
+    }
+
+    if (minimized) {
+        // iOS editorBarMinimized parity: the lower half of the editor comes
+        // back while play state and progress stay one tap away.
+        com.speechnotes.app.ui.playback.MinimizedPlaybackPill(
+            isPlaying = state == SpeechState.SPEAKING,
+            isGenerating = state == SpeechState.GENERATING,
+            isPlayEnabled = true,
+            progressText = progress?.let { "${(it * 100).toInt()}%" },
+            onTogglePlay = {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                vm.player.togglePlay(speechTextProvider(), note)
+            },
+            onExpand = {
+                haptics.performHapticFeedback(HapticFeedbackType.ToggleOn)
+                setMinimized(false)
+            },
+        )
+        return
+    }
 
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        androidx.compose.material3.AssistChip(
-            onClick = onOpenVoicePicker,
-            label = { Text(voiceDescription) },
-            leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null) },
-        )
-
-        // Local capture: 'progress' is delegated (val by collectAsState), so
-        // the smart cast can't flow into the progress lambda.
         val progressValue = progress
         if (progressValue != null && state == SpeechState.SPEAKING) {
-            Spacer(Modifier.height(6.dp))
             androidx.compose.material3.LinearProgressIndicator(
                 progress = { progressValue.toFloat() },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().height(2.dp),
             )
+            Spacer(Modifier.height(4.dp))
         }
-
-        if (hasResume) {
-            TextButton(onClick = onRestartFromBeginning, modifier = Modifier.padding(top = 4.dp)) {
-                Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Restart from beginning", style = MaterialTheme.typography.labelMedium)
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            // The tap is always live. While GENERATING it cancels the run
-            // (SpeechPlayer.togglePlay → stop); disabling it for the whole
-            // model-load window is what made the control feel dead — the UI
-            // showed nothing at all until synthesis actually began.
-            androidx.compose.material3.Button(
+            // Weighted voice chip: long voice descriptions ellipsize instead
+            // of pushing the transport beyond the right screen edge.
+            androidx.compose.material3.AssistChip(
+                onClick = onOpenVoicePicker,
+                label = {
+                    Text(
+                        voiceDescription,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                },
+                leadingIcon = {
+                    Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+                modifier = Modifier.weight(1f).height(36.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            androidx.compose.material3.FilledIconButton(
                 onClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     vm.player.togglePlay(speechTextProvider(), note)
                 },
+                modifier = Modifier.size(40.dp).semantics { contentDescription = playLabel(state) },
             ) {
                 when (state) {
-                    SpeechState.GENERATING -> {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Stop")
-                    }
-                    SpeechState.SPEAKING -> {
-                        Icon(Icons.Default.Pause, contentDescription = "Pause")
-                        Spacer(Modifier.width(6.dp))
-                        Text("Pause")
-                    }
-                    SpeechState.PAUSED -> {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Resume")
-                        Spacer(Modifier.width(6.dp))
-                        Text("Resume")
-                    }
-                    SpeechState.IDLE -> {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Play")
-                        Spacer(Modifier.width(6.dp))
-                        Text("Play")
-                    }
+                    SpeechState.GENERATING -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    SpeechState.SPEAKING -> Icon(Icons.Default.Pause, contentDescription = null)
+                    SpeechState.PAUSED -> Icon(Icons.Default.PlayArrow, contentDescription = null)
+                    SpeechState.IDLE -> Icon(Icons.Default.PlayArrow, contentDescription = null)
                 }
             }
             if (state == SpeechState.SPEAKING || state == SpeechState.PAUSED || state == SpeechState.GENERATING) {
-                Spacer(Modifier.width(8.dp))
-                androidx.compose.material3.OutlinedButton(onClick = { vm.player.stop() }) {
+                IconButton(
+                    onClick = { vm.player.stop() },
+                    modifier = Modifier.size(40.dp),
+                ) {
                     Icon(Icons.Default.Stop, contentDescription = "Stop")
                 }
             }
-            // Always reachable: read-along used to appear only WHILE playing,
-            // so there was no way to arm it beforehand or turn it off from
-            // the notes side at all.
-            Spacer(Modifier.width(8.dp))
-            androidx.compose.material3.FilledTonalButton(onClick = onReadAlongToggle) {
-                Text(if (readAlongEnabled) "Read-along: on" else "Read-along: off")
+            Spacer(Modifier.width(4.dp))
+            androidx.compose.material3.FilledTonalButton(
+                onClick = onReadAlongToggle,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                modifier = Modifier.height(36.dp),
+            ) {
+                Text(if (readAlongEnabled) "Read-along: on" else "Read-along: off", maxLines = 1)
+            }
+            IconButton(onClick = {
+                haptics.performHapticFeedback(HapticFeedbackType.ToggleOn)
+                setMinimized(true)
+            }, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Minimize playback controls")
             }
         }
 
-        Spacer(Modifier.height(8.dp))
-
         Row(verticalAlignment = Alignment.CenterVertically) {
+            if (hasResume) {
+                IconButton(onClick = onRestartFromBeginning, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.RestartAlt, contentDescription = "Restart from beginning", modifier = Modifier.size(18.dp))
+                }
+            }
             Text("Speed", style = MaterialTheme.typography.labelMedium)
             Slider(
                 value = rate.toFloat(),

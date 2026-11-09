@@ -1,10 +1,5 @@
 package com.speechnotes.app.data
 
-
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -23,10 +18,8 @@ object BookDropRegistry {
     @Volatile
     var sender: LocalSendSender? = null
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     @Volatile
-    private var importFile: ((File) -> Unit)? = null
+    private var importFile: (suspend (File) -> Unit)? = null
 
     /**
      * Called by SpeechnotesViewModel at creation: a landed file routes by
@@ -35,43 +28,47 @@ object BookDropRegistry {
      * The ViewModel hands over Uri-based entry points, so the file is wrapped
      * in a file:// Uri through the FileProvider-backed path the importers
      * already read.
+     *
+     * SUSPENDING on purpose: the receiver awaits the route so its grace
+     * sweep cannot delete a file that is still being imported (a large
+     * audiobook takes minutes to land in the library).
      */
-    fun registerImporter(route: (File) -> Unit) {
+    fun registerImporter(route: suspend (File) -> Unit) {
         importFile = route
     }
 
-    fun routeLanded(file: File) {
+    /** Routes one landed file and reports the outcome in the history. */
+    suspend fun routeLanded(file: File) {
         val route = importFile
         if (route == null) {
             LogStore.warn("BookDrop: no importer registered yet — dropping ${file.name}")
             return
         }
-        scope.launch {
-            runCatching { route(file) }
-                .onSuccess {
-                    // The accept gate (BookDropCore.acceptedExtensions) only
-                    // lets landable formats through, so a handed-off file is
-                    // on its way into the library — record it (iOS reports
-                    // the awaited outcome; the importers here are
-                    // fire-and-forget, and their failures toast).
-                    //
-                    // The WAV and markdown routes report their own outcome
-                    // (they save to Exports / create a note and say so), so
-                    // they are not reported twice.
-                    val ext = file.extension.lowercase()
-                    if (ext in SELF_REPORTED_ROUTES) return@onSuccess
-                    val detail = if (ext == "jex") "Importing into notes" else "Importing into the shelf"
-                    receiver?.reportImport(
-                        file.name,
-                        file.length(),
-                        com.speechnotes.app.logic.BookDropRecord.Outcome.Imported(detail),
-                    )
-                }
-                .onFailure { error ->
-                    LogStore.error("BookDrop: import of ${file.name} failed — ${error.message}")
-                    receiver?.reportImport(file.name, file.length(), com.speechnotes.app.logic.BookDropRecord.Outcome.Failed(error.message ?: "Import failed"))
-                }
-        }
+        // The name and the size are read BEFORE the route: a book import
+        // MOVES the file into the library, so afterwards there is nothing
+        // left to measure.
+        val name = file.name
+        val size = file.length()
+        val ext = file.extension.lowercase()
+        runCatching { route(file) }
+            .onSuccess {
+                // The accept gate (BookDropCore.acceptedExtensions) only
+                // lets landable formats through, so a handed-off file is
+                // on its way into the library — record it (iOS reports
+                // the awaited outcome; the importers here report their own
+                // failures as an importError on the shelf card).
+                //
+                // The WAV and markdown routes report their own outcome
+                // (they save to Exports / create a note and say so), so
+                // they are not reported twice.
+                if (ext in SELF_REPORTED_ROUTES) return@onSuccess
+                val detail = if (ext == "jex") "Importing into notes" else "Importing into the shelf"
+                receiver?.reportImport(name, size, com.speechnotes.app.logic.BookDropRecord.Outcome.Imported(detail))
+            }
+            .onFailure { error ->
+                LogStore.error("BookDrop: import of $name failed — ${error.message}")
+                receiver?.reportImport(name, size, com.speechnotes.app.logic.BookDropRecord.Outcome.Failed(error.message ?: "Import failed"))
+            }
     }
 
     /**
