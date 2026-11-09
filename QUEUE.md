@@ -590,6 +590,15 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Completed Units
 
+- **2026-11-09 — RELEASE v0.1.5 (prerelease) PUBLISHED.** Tag `v0.1.5` on the
+  integration commit; GitHub prerelease carries `Speechnotes-0.1.5-arm64-v8a-
+  release.apk` (58 MB, phones) and `Speechnotes-0.1.5-x86_64-release.apk`
+  (65 MB, Waydroid). aapt2-verified: versionCode 7 / versionName 0.1.5 /
+  arm64-v8a native code; R8 clean; ONNX + ML Kit OCR native libs present.
+  Identifiers purged from the tree AND the full history (second rewrite,
+  verified zero hits across all refs); remote main force-pushed to the
+  rewritten chain — older clones need a fresh fetch + reset, not a pull.
+
 - **2026-11-09 — INTEGRATION + RELEASE v0.1.5 (Albus).** The follow-up wave
   is integrated, scrubbed and released:
   - **Ron R7/R8 — the "TTS doesn't work" root cause is FIXED.** R7 (lazy
