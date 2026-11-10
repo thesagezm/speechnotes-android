@@ -57,6 +57,20 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
+0. **2026-11-10 — PHONON PORT (user): "start porting phonon-tts to
+   speechnotes android — also research from what speechnotes ios has done…
+   it has its own phonon issues it is trying to handle so you can research
+   from there but do it your way and in the most compatible way"; then
+   "use latest fixes from speechnotes-ios" and "do this work on a separate
+   branch so its easy to revert".** New engine wave on branch `phonon-tts`:
+   Gradium Phonon 31M (English streaming TTS, Apache-2.0) via
+   `onnx-community/phonon-31m-en-ONNX` — the app's 5th engine slot (iOS
+   picker order: system → Kokoro → **Phonon** → Supertonic). Plan approved;
+   contract ported from iOS `Docs/PHONON-PORT.md` + `PhononEngine.swift`
+   AT COMMIT `49e8ab7` (the repeat-spiral KV fix: head-major
+   `[1,heads,seq,dim]` cache slicing + the single +8/call counter — the
+   old +7/+8 two-counter split is obsolete; do NOT port from older
+   snapshots). Units P1–P4 under In Flight.
 0. **2026-11-10 — the ORT/Android acceleration advisory (user-pasted).** An
    external plan written for the iOS→Android port (Core ML/ANE → ORT EPs,
    Waydroid-not-a-benchmark, gap diagnosis, pipeline corrections). Analysis
@@ -164,6 +178,24 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **BRANCH `phonon-tts` (2026-11-10) — the Phonon engine wave, off `main`
+  at `1025854`.** All Phonon units land here; merge to main after P4
+  verifies. Rationale: user asked for easy revert.
+- **2026-11-10 — Unit P1: the Phonon tokenizer + normalizer in `logic/`
+  — DONE (258/258 green, x86_64 APK 89 MB).** New
+  `logic/PhononNormalizerTable.kt` (the hub's 191-step chain as ordered
+  data, verbatim port of the iOS generated table) and
+  `logic/PhononTokenizer.kt` (Metaspace pre-tokenizer + Unigram Viterbi +
+  byte fallback, ported from `PhononTokenizer.swift` @ `49e8ab7`; strict
+  UTF-8 decode so invalid byte runs skip pieces exactly like Swift's
+  `String(bytes:encoding:)`; Prepend-skips-empty guarded). Parity: the SAME
+  fixture files as iOS now live in `app/src/test/resources/`
+  (`phonon-tokenizer.json` = the real hub tokenizer, 169,734 bytes;
+  `phonon-tokenizer-fixtures.json` = the 14 reference-verified cases) →
+  Android/iOS/reference emit identical ids by construction. 5 new
+  `PhononTokenizerTest` tests. One port translation recorded: ICU
+  `\p{Alphabetic}` → Java `\p{IsAlphabetic}` (same property; first test run
+  failed on it, fixtures pin the behavior). Next: Unit P2.
 - **2026-11-10 — Unit 0d: per-chunk RTF timeline (the acceleration
   advisory's diagnostic table) — SHIPPED, observability-only.**
   New `speech/ChunkTimeline.kt` (pure, JVM-tested, Locale.US-pinned) +
