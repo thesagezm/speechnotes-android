@@ -395,7 +395,13 @@ class StreamingPlaybackCore(
                     }
                     return@execute
                 }
-                bridgeIfDry(index, g)
+                // Bank depth at admission — post-hold, pre-render: the "PCM
+                // queue immediately before generation" reading of the per-chunk
+                // timeline. Whether the track already existed (chunk 0 creates
+                // it) completes the timeline's session-init fact.
+                val bankedBefore = bankedSeconds()
+                val hadTrack = audioTrack != null
+                val bridged = bridgeIfDry(index, g)
                 val renderStartedAt = System.nanoTime()
                 val samples = runCatching { generateChunk(chunk.text) }
                     .onFailure { LogStore.error("${config.logPrefix}: chunk $index failed: ${it.message}") }
@@ -407,6 +413,24 @@ class StreamingPlaybackCore(
                 lastChunkRenderSeconds = lastChunkRenderSeconds * 0.3 + wallSeconds * 0.7
                 if (samples == null) BeepPlayer.softError()
                 schedule(index, samples, g)
+                // The per-chunk timeline (ChunkTimeline): one line that makes
+                // any device run diagnose itself — RTF > 1 sustained means
+                // inference-bound (buffering cannot close the gaps); RTF < 1
+                // with a dry bank means scheduling; RTF < 1 with audio still
+                // queued means the sink. banked-after reads post-schedule
+                // depth (the new chunk written, keepalive included).
+                LogStore.info(
+                    "${config.logPrefix} " + ChunkTimeline.line(
+                        label = "chunk $index/${utteranceChunks.size}",
+                        chars = chunk.text.length,
+                        audioSeconds = samples?.let { it.size / sampleRateHz.toDouble() },
+                        renderSeconds = wallSeconds,
+                        bankedBeforeSeconds = bankedBefore,
+                        bankedAfterSeconds = bankedSeconds(),
+                        bridged = bridged,
+                        trackCreated = !hadTrack,
+                    )
+                )
             }
             main {
                 if (g == generation && state == SpeechState.GENERATING) {
@@ -611,9 +635,12 @@ class StreamingPlaybackCore(
      * silence disables the bridge for the session with an error log — a
      * synthesis that dry for that long is dead, and the start-stall
      * watchdog (R6) ends the session rather than silence looping forever.
+     *
+     * Returns true when keepalive silence was actually written this call —
+     * the per-chunk timeline's `bridge=on` fact.
      */
-    private fun bridgeIfDry(nextIndex: Int, generationId: Int) {
-        if (generationId != generation || !running.get() || paused.get()) return
+    private fun bridgeIfDry(nextIndex: Int, generationId: Int): Boolean {
+        if (generationId != generation || !running.get() || paused.get()) return false
         val banked = bankedSeconds()
         if (!RenderAheadBankPolicy.bridgeNeeded(
                 bankedSeconds = banked,
@@ -622,10 +649,10 @@ class StreamingPlaybackCore(
                 trackAttached = audioTrack != null,
             )
         ) {
-            return
+            return false
         }
-        if (bridgeDisabled) return
-        val track = audioTrack ?: return
+        if (bridgeDisabled) return false
+        val track = audioTrack ?: return false
         val silenceSeconds = RenderAheadBankPolicy.bridgeSilenceSeconds(lastChunkRenderSeconds)
         val frames = (silenceSeconds * sampleRateHz).toInt().coerceAtLeast(1)
         if (bridgeIncidentSeconds == 0.0) {
@@ -641,13 +668,13 @@ class StreamingPlaybackCore(
             val fit = track.write(silence, offset, silence.size - offset, android.media.AudioTrack.WRITE_NON_BLOCKING)
             if (fit < 0) {
                 LogStore.error("${config.logPrefix}: bridge write failed ($fit)")
-                return
+                return false
             }
             if (fit == 0) {
                 // Buffer full with a DRY bank cannot happen (the head is at
                 // the write point); treat it as a wedged track and bail —
                 // the completion poller's revival path owns that case.
-                return
+                return false
             }
             offset += fit
             totalFramesWritten += fit
@@ -660,6 +687,7 @@ class StreamingPlaybackCore(
                     .format(BRIDGE_CAP_SECONDS)
             )
         }
+        return true
     }
 
     /** Safety cap on one session's total bridged silence, in seconds. */
@@ -920,10 +948,23 @@ class StreamingPlaybackCore(
                 val all = ArrayList<Float>()
                 var done = 0
                 for (chunk in utteranceChunks) {
+                    val renderStartedAt = System.nanoTime()
                     val samples = runCatching { generateChunk(chunk.text) }.getOrNull()
+                    val wallSeconds = (System.nanoTime() - renderStartedAt) / 1_000_000_000.0
                     if (samples != null) all.addAll(samples.toTypedArray())
                     for (i in 0 until silenceSamples) all.add(0f)
                     done++
+                    // Export-side timeline line: no track/bank facts to report
+                    // (offline render), but the per-chunk RTF feeds the same
+                    // table — export RTF is the clean inference-only reading.
+                    LogStore.info(
+                        "${config.logPrefix} export $done/${utteranceChunks.size}: " +
+                            "chars=${chunk.text.length} " +
+                            ChunkTimeline.speedFragment(
+                                samples?.let { it.size / sampleRateHz.toDouble() },
+                                wallSeconds,
+                            )
+                    )
                     main { onProgress(done.toDouble() / utteranceChunks.size) }
                 }
                 if (all.isEmpty()) { main { onDone(null) }; return@execute }

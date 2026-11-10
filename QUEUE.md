@@ -57,7 +57,28 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
-0. **2026-11-08 — BOOKDROP (user's own words, "you are hermione the debugg
+0. **2026-11-10 — the ORT/Android acceleration advisory (user-pasted).** An
+   external plan written for the iOS→Android port (Core ML/ANE → ORT EPs,
+   Waydroid-not-a-benchmark, gap diagnosis, pipeline corrections). Analysis
+   against the tree: **most of its Phase 1 is already implemented and
+   verified here** — the R-wave root-caused the dead-sink as category (d)
+   integration failure (R8: AudioTrack native buffer > 32 KB never drains;
+   sine-wave repro with no ONNX; fixed by `MAX_TRACK_BUFFER_BYTES = 32 KB`),
+   the seconds-based bank (R1), never-run-dry bridge (R2), watchdogs (R6),
+   adaptive opener (0a) and the single-worker/continuous-track/prebuffer
+   pipeline checklist are all in `StreamingPlaybackCore.kt`. Waydroid ABI
+   translation is moot (x86_64 splits only, never arm64 there). **What
+   remains actionable, queued as 0d–0f below:** (0d) per-chunk RTF timeline
+   instrumentation — index, chars, audio-s, render wall-s, RTF, banked
+   depth before/after (the one diagnostic the advisory wants that we lack;
+   also completes Pending Queue 3's device evidence); (0e) XNNPACK EP +
+   Supertonic `NO_OPT`→`ALL_OPT` behind a debug flag (no new dependency;
+   PCM-parity check vs CPU EP via the debug probe); (0f) physical-phone
+   RTF/thermal baseline — Waydroid's measured RTF ≈ 1.9 (Kokoro-small: 2.2 s
+   audio in 4.23 s) is > 1, so container gaps are physics, not scheduling;
+   only a phone run can answer the speed question. NNAPI recorded as
+   experimental-only (deprecated Android 15), no code.
+1. **2026-11-08 — BOOKDROP (user's own words, "you are hermione the debugg
    agent"): "the perfect bookdrop is the ios bookdrop".** Three bugs, in
    the user's order:
    1. **Android BookDrop accepts small files but not large files
@@ -143,6 +164,28 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-11-10 — Unit 0d: per-chunk RTF timeline (the acceleration
+  advisory's diagnostic table) — SHIPPED, observability-only.**
+  New `speech/ChunkTimeline.kt` (pure, JVM-tested, Locale.US-pinned) +
+  three touches in `StreamingPlaybackCore.kt`: the speak-loop logs one
+  line per chunk (`chunk i/N: chars=… audio=…s render=…s rtf=… banked=…→…s
+  bridge=on/off track=new/reused`), `exportWav` logs the speed fragment
+  per chunk (the clean inference-only RTF), and `bridgeIfDry` now returns
+  whether it wrote keepalive silence (the timeline's `bridge=on`) — every
+  bare `return` became `return false`, control flow otherwise identical,
+  single call site. **Evidence:** constrained gradle (flock
+  /tmp/sn-gradle.lock, --no-daemon -Xmx1200m, in-process Kotlin) → BUILD
+  SUCCESSFUL 3m53s; test-results XML = **253 tests / 0 failures / 0
+  errors** (248 prior + 5 ChunkTimelineTest, the headline pinning the
+  real release datapoint 2.2 s audio / 4.23 s render → rtf=1.92); x86_64
+  APK 89 MB built. **Device smoke NOT run:** Waydroid session RUNNING but
+  `waydroid status` reports `IP address: UNKNOWN` and 192.168.240.2 is
+  no-route (the HARRY1 close-out pathology; a container restart clears
+  it, app data survives) — and the user closed the device pass for a
+  bigger update. Nothing was mutated on the device this session. Next
+  session: one neural play + grep `rtf=` in logcat completes 0d; 0e
+  (XNNPACK + Supertonic NO_OPT→ALL_OPT behind a debug flag) is next in
+  the queue.
 - **2026-11-09 — HARRY2: the `!!` sweep unit (Pending Queue 5) — DONE,
   UNCOMMITTED (Albus commits), plus a partial H4 landscape re-verify.**
   Files touched (non-shared, claim-first; the ViewModel hunk is one line):
@@ -432,19 +475,33 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 0. **TTS generation speed (user feedback):**
    - **0a — seconds-based ChunkSchedule: SHIPPED + Waydroid-verified**
      (Completed Units).
-   - **0b — Live seconds-based render-ahead bank** (fixes P0-7): replace the
-     chunk-count semaphore (`bankTargetSeconds/4`, StreamingPlaybackCore.kt)
-     with `RenderAheadBankPolicy.allows(bankedSeconds, target)` per chunk —
-     banked = (framesWritten − head)/sampleRate, the iOS core's real pacing.
-   - **0c — Never-run-dry silence bridge** (iOS `241888e`): when the last
-     scheduled buffer completes and the next chunk is still rendering, write
-     0.5 s silent keepalive buffers so the track is never disabled by
-     AudioFlinger — speech resumes when synthesis lands instead of the
-     session dying. On the 2026-10-24 Waydroid boot this is ALSO the
-     frozen-head-at-0 fix path (AudioFlinger `BUFFER TIMEOUT: remove` the
-     moment playback started — the HAL write blocked 574 ms and the track
-     was dropped; the completion poller spun at head 0/58200 until manual
-     stop; pre-existing pathology, two guards already fight it).
+   - **0b — live seconds-based render-ahead bank: SHIPPED as Ron R1**
+     (pack wave, `1075cb5`) — the chunk-count semaphore is deleted;
+     `speak()` paces on `RenderAheadBankPolicy.allows(bankedSeconds(),
+     bankTarget)` with a dead-sink escape (StreamingPlaybackCore.kt).
+   - **0c — never-run-dry silence bridge: SHIPPED as Ron R2** (same wave)
+     — `bridgeIfDry()` pre-writes one keepalive sized to the last render
+     + 1 s margin, capped at 120 s/session; and R8 fixed the frozen-head
+     root cause itself (`MAX_TRACK_BUFFER_BYTES` = 32 KB).
+   - **0d — per-chunk RTF timeline instrumentation: SHIPPED (2026-11-10,
+     code + 253/253 green + x86_64 APK; on-device smoke PENDING — the
+     Waydroid adb path was down and the user called the pass off before
+     the next update).** New pure `speech/ChunkTimeline.kt` (locale-pinned
+     formatting, RTF arithmetic, 5 tests) and one line per chunk in
+     `speak()` and `exportWav()`: index/chars/audio-s/render wall-s/RTF/
+     banked before→after/bridge armed/track created. Observability-only
+     diff — `bridgeIfDry` gained a Boolean return, control flow otherwise
+     identical. The smoke is one neural play + grep when the container
+     network returns.
+   - **0e — XNNPACK EP + Supertonic `NO_OPT`→`ALL_OPT`, behind a debug
+     flag:** `addXnnpack(...)` is built into onnxruntime-android (no new
+     dependency); verify PCM parity vs CPU EP on a fixed sentence via the
+     debug probe; meaningful numbers only on a phone (Waydroid = smoke).
+   - **0f — physical-phone RTF/thermal baseline:** needs the user's phone
+     on adb (real hardware, never an emulator). Run the release build with
+     0d's logging, capture RTF + thermal state, then decide EP/threads.
+     NNAPI: recorded as experimental-only (deprecated Android 15), no code
+     unless a phone shows CPU-bound inference.
    - Token-ceiling answer (recorded): the speed win is NOT a bigger ceiling —
      Kokoro 160 chars already sits at MAX_TOKENS 510 after G2P expansion
      (raising it re-creates the "token count 681" abort); the win is
@@ -475,6 +532,13 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Session Handover
 
+- **2026-11-10 HANDOVER (Unit 0d session).** No claims held; Unit 0d is
+  committed + pushed. The Waydroid adb path was DOWN at close (session
+  RUNNING, `IP address: UNKNOWN`, 192.168.240.2 unreachable — container
+  restart clears it) and **no device mutations were made this session**, so
+  there is no device state to restore. Open threads: 0d's one-play smoke
+  (logcat `rtf=` lines), then 0e. The user is bringing a big update —
+  start from what they say.
 - **Environment**: Waydroid was RUNNING at handover (session started ~16:00
   host time 2026-10-24). Get the adb endpoint via `waydroid status`
   (Session IP address) → `adb connect <that-ip>:5555`. If adb shows
