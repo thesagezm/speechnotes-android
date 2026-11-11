@@ -181,6 +181,38 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 - **BRANCH `phonon-tts` (2026-11-10) — the Phonon engine wave, off `main`
   at `1025854`.** All Phonon units land here; merge to main after P4
   verifies. Rationale: user asked for easy revert.
+- **2026-11-11 — Unit P3: PhononEngine (the WORKING prefill-once recipe)
+  + full player wiring — CODE-COMPLETE (258/258 green, x86_64 APK 89 MB);
+  DEVICE CHECKPOINT PENDING.** Ported from speechnotes-iOS
+  `PhononEngine.swift` AT COMMIT `75ff1ba` — the user confirmed Phonon
+  works on iOS there and told us to use the latest. The contract CHANGED
+  under us mid-wave (iOS commits 1b232f5 + 75ff1ba, 2026-11-11):
+  **prefill-once** — call 0 prefills voice+text against an EMPTY cache,
+  every present.* is fed back WHOLE (prompt K/V frozen forever), calls 1+
+  feed an EMPTY prompt (`input_ids` [1,0], voice [1,0,512] zero-size
+  tensors) and positions collapse to arange(kv_rows, kv_rows+8). The old
+  re-run-prompt recipe caused the sentence-end long tail (layers 1–5
+  attended to latents AFTER them; 8/120 degenerate x86 runs → 0/120).
+  Whole-present feedback DELETES the per-head KV copy — the head-major
+  striding bug class is gone. Two counters remain (kvRows: P+7 after
+  prefill, +8/call; latentCount: +8/call). Soft-EOS insurance: 2
+  consecutive calls with per-call eos peak > 1.0 without a real crossing
+  stops the chunk; budget stays hub ×1.5; non-finite latent guard; eos
+  peak logged. Engine: `speech/PhononEngine.kt` (tensor plumbing via
+  direct native-order ByteBuffers; the previous result's present.* tensors
+  ARE the next call's past.* inputs — previous result closes when the new
+  one exists; SplitMix64+Box-Muller noise identical to iOS — Kotlin needs
+  `uL` for the over-Long hex constants). Wiring: SpeechPlayer phonon()
+  singleton + resolveEngine + rebuildEngine fallback/unload + setVoice +
+  idle-unload + shutdown + voice description (P2's temporary system()
+  routing is gone). **NEXT (P4): the load-bearing device checkpoint —
+  install on Waydroid, download the ~192 MB set, select Phonon, play:
+  (a) ORT-Android 1.30.0 must load the graphs (com.microsoft contrib ops:
+  GroupQueryAttention/RotaryEmbedding/QuickGelu — the full Maven AAR is
+  documented as the full build, unproven on device); (b) zero-size input
+  tensors must be accepted; (c) GENERATING → SPEAKING with rtf= lines;
+  (d) WAV export non-trivial.** If (a) fails: fallback = the fuller
+  onnxruntime-training-android AAR (documented, not built speculatively).
 - **2026-11-11 — Unit P2: Phonon model plumbing + settings UI — DONE
   (258/258 green, x86_64 APK 89 MB).** `EngineKind.PHONON` ("Phonon —
   small · English (~192 MB)", picker slot between Kokoro and Supertonic =

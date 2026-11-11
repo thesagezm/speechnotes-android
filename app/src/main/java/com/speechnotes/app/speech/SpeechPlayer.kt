@@ -119,6 +119,7 @@ class SpeechPlayer(
     private var systemEngine: SystemTtsEngine? = null
     private var kokoroEngine: KokoroEngine? = null
     private var supertonicEngine: SupertonicEngine? = null
+    private var phononEngine: PhononEngine? = null
 
     /**
      * The engine of the CURRENT selection — null until one is actually
@@ -235,6 +236,7 @@ class SpeechPlayer(
             // the ONNX session goes — that is the 300 MB.
             runCatching { (previous as? KokoroEngine)?.unloadModel() }
             runCatching { (previous as? SupertonicEngine)?.unloadModel() }
+            runCatching { (previous as? PhononEngine)?.unloadModel() }
         }
         // When a neural engine is selected but its model isn't downloaded, the
         // system engine is the ACTIVE engine — so playback still works and the
@@ -243,7 +245,7 @@ class SpeechPlayer(
         usingSystemFallback = when (kind) {
             EngineKind.SYSTEM -> false
             EngineKind.KOKORO, EngineKind.KOKORO_SMALL -> !ModelFiles.isValid(kind)
-            EngineKind.PHONON -> true
+            EngineKind.PHONON -> !ModelFiles.isValid(EngineKind.PHONON)
             EngineKind.SUPERTONIC -> !ModelFiles.isValid(EngineKind.SUPERTONIC)
         }
         LogStore.info(
@@ -266,10 +268,8 @@ class SpeechPlayer(
             EngineKind.SYSTEM -> system()
             EngineKind.KOKORO, EngineKind.KOKORO_SMALL ->
                 if (usingSystemFallback) system() else kokoroEngineFor(kind)
-            // Unit P3 wires PhononEngine here (with the usingSystemFallback
-            // branch flipping to !ModelFiles.isValid). Until then Phonon is
-            // downloadable/configurable and playback uses the system voice.
-            EngineKind.PHONON -> system()
+            EngineKind.PHONON ->
+                if (usingSystemFallback) system() else phonon()
             EngineKind.SUPERTONIC ->
                 if (usingSystemFallback) system() else supertonic()
         }
@@ -294,6 +294,14 @@ class SpeechPlayer(
             it.voice = _supertonicVoice.value
             it.lang = _supertonicLang.value
             it.renderQuality = SupertonicEngine.RenderQuality.fromRaw(_supertonicQuality.value)
+        }
+
+    private fun phonon(): SpeechEngine =
+        phononEngine ?: PhononEngine().also {
+            observe(it)
+            phononEngine = it
+        }.also {
+            it.voice = _phononVoice.value
         }
 
     private fun kokoroEngineFor(kind: EngineKind): KokoroEngine {
@@ -376,6 +384,7 @@ class SpeechPlayer(
             if (_state.value.isActive) return@launch
             runCatching { kokoroEngine?.unloadModel() }
             runCatching { supertonicEngine?.unloadModel() }
+            runCatching { phononEngine?.unloadModel() }
         }
     }
 
@@ -473,9 +482,7 @@ class SpeechPlayer(
         Prefs.prefs(context).edit().putString(key, codename).apply()
         rememberRecentVoice(engine, codename)
         if (kindUsesKokoro(engine)) kokoroEngine?.voice = codename
-        if (engine == EngineKind.PHONON) {
-            // PhononEngine.voice wiring lands with Unit P3.
-        }
+        if (engine == EngineKind.PHONON) phononEngine?.voice = codename
         if (engine == EngineKind.SUPERTONIC) supertonicEngine?.voice = codename
     }
 
@@ -983,9 +990,9 @@ class SpeechPlayer(
             EngineKind.KOKORO, EngineKind.KOKORO_SMALL ->
                 if (usingSystemFallback) "System voice (model missing)"
                 else VoiceCatalog.subtitle(_voice.value, _engineKind.value.key)
-            // Unit P3 flips the fallback branch to !ModelFiles.isValid and
-            // this to the Phonon voice subtitle once the engine is wired.
-            EngineKind.PHONON -> "System voice (Phonon synthesizer not wired yet)"
+            EngineKind.PHONON ->
+                if (usingSystemFallback) "System voice (model missing)"
+                else VoiceCatalog.subtitle(_phononVoice.value, "phonon")
             EngineKind.SUPERTONIC ->
                 if (usingSystemFallback) "System voice (model missing)"
                 else VoiceCatalog.subtitle(_supertonicVoice.value, "supertonic")
@@ -1081,5 +1088,6 @@ class SpeechPlayer(
         // finalizer that may never run.
         kokoroEngine?.shutdown()
         supertonicEngine?.shutdown()
+        phononEngine?.shutdown()
     }
 }
