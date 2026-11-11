@@ -181,6 +181,27 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 - **BRANCH `phonon-tts` (2026-11-10) — the Phonon engine wave, off `main`
   at `1025854`.** All Phonon units land here; merge to main after P4
   verifies. Rationale: user asked for easy revert.
+- **2026-11-11 — Unit P2: Phonon model plumbing + settings UI — DONE
+  (258/258 green, x86_64 APK 89 MB).** `EngineKind.PHONON` ("Phonon —
+  small · English (~192 MB)", picker slot between Kokoro and Supertonic =
+  iOS order); `AppFiles.phonon{,Onnx,Voices}Dir` ("Phonon/onnx",
+  "Phonon/voices", iOS parity); `ModelFiles.phonon` (hub
+  `onnx-community/phonon-31m-en-ONNX`: 2 graphs + external weights +
+  tokenizer + **26 voice bins gated EXACTLY 256,000 bytes** min=max so
+  truncation never counts as complete); `ModelManager._phononState` +
+  refresh/isReadyCached/stateFlowFor branches + **deleteModel guard fix**
+  (Phonon's tokenizer.json/voices must NOT hit the shared-Kokoro-file
+  exclusion); `VoiceCatalog.phononVoiceIds` + 26 descriptors (iOS
+  VoiceCatalog verbatim); `Prefs.PHONON_VOICE = "phononVoice"` +
+  `"recentPhononVoices"` (iOS-shared key names); SpeechPlayer
+  `phononVoice` StateFlow + setVoice/recents/audition/description
+  branches. **P2 semantics: PHONON is selectable/downloadable/configurable
+  but playback routes to system() (usingSystemFallback=true
+  unconditionally) until Unit P3 wires PhononEngine** — recorded in code
+  comments at both sites. UI: SpeechSettingsScreen (readyNow, VoiceRow,
+  ModelDownloadRow, phononState collect) + VoicePickerSheet ("Phonon
+  voice" title + phononVoice active-voice flow) — descriptors(route) by
+  engine.key made phonon work there with no extra UI code. Next: P3.
 - **2026-11-10 — Unit P1: the Phonon tokenizer + normalizer in `logic/`
   — DONE (258/258 green, x86_64 APK 89 MB).** New
   `logic/PhononNormalizerTable.kt` (the hub's 191-step chain as ordered

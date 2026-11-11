@@ -47,6 +47,11 @@ class SpeechPlayer(
     private val _voice = MutableStateFlow("am_eric")
     val voice: StateFlow<String> = _voice.asStateFlow()
 
+    /** The Phonon voice id (iOS `phononVoice` key parity — a separate key
+     *  because Phonon ids never collide with Kokoro codenames). */
+    private val _phononVoice = MutableStateFlow("default")
+    val phononVoice: StateFlow<String> = _phononVoice.asStateFlow()
+
     private val _supertonicVoice = MutableStateFlow("M1")
     val supertonicVoice: StateFlow<String> = _supertonicVoice.asStateFlow()
 
@@ -159,6 +164,7 @@ class SpeechPlayer(
         _rateMultiplier.value = prefs.getFloat(Prefs.RATE_MULTIPLIER, 1.0f).toDouble()
         _engineKind.value = EngineKind.fromKey(prefs.getString(Prefs.ENGINE_KIND, "system") ?: "system")
         _voice.value = prefs.getString(Prefs.VOICE, "am_eric") ?: "am_eric"
+        _phononVoice.value = prefs.getString(Prefs.PHONON_VOICE, "default") ?: "default"
         _supertonicVoice.value = prefs.getString(Prefs.SUPERTONIC_VOICE, "M1") ?: "M1"
         _supertonicLang.value = prefs.getString(Prefs.SUPERTONIC_LANG, "en") ?: "en"
         _supertonicQuality.value = prefs.getString(Prefs.SUPERTONIC_QUALITY, "high") ?: "high"
@@ -232,10 +238,12 @@ class SpeechPlayer(
         }
         // When a neural engine is selected but its model isn't downloaded, the
         // system engine is the ACTIVE engine — so playback still works and the
-        // voice description says so.
+        // voice description says so. PHONON falls back unconditionally until
+        // Unit P3 lands the PhononEngine (configuration-only until then).
         usingSystemFallback = when (kind) {
             EngineKind.SYSTEM -> false
             EngineKind.KOKORO, EngineKind.KOKORO_SMALL -> !ModelFiles.isValid(kind)
+            EngineKind.PHONON -> true
             EngineKind.SUPERTONIC -> !ModelFiles.isValid(EngineKind.SUPERTONIC)
         }
         LogStore.info(
@@ -258,6 +266,10 @@ class SpeechPlayer(
             EngineKind.SYSTEM -> system()
             EngineKind.KOKORO, EngineKind.KOKORO_SMALL ->
                 if (usingSystemFallback) system() else kokoroEngineFor(kind)
+            // Unit P3 wires PhononEngine here (with the usingSystemFallback
+            // branch flipping to !ModelFiles.isValid). Until then Phonon is
+            // downloadable/configurable and playback uses the system voice.
+            EngineKind.PHONON -> system()
             EngineKind.SUPERTONIC ->
                 if (usingSystemFallback) system() else supertonic()
         }
@@ -450,12 +462,20 @@ class SpeechPlayer(
     fun setVoice(codename: String, engine: EngineKind = _engineKind.value) {
         when (engine) {
             EngineKind.SUPERTONIC -> _supertonicVoice.value = codename
+            EngineKind.PHONON -> _phononVoice.value = codename
             else -> _voice.value = codename
         }
-        val key = if (engine == EngineKind.SUPERTONIC) Prefs.SUPERTONIC_VOICE else Prefs.VOICE
+        val key = when (engine) {
+            EngineKind.SUPERTONIC -> Prefs.SUPERTONIC_VOICE
+            EngineKind.PHONON -> Prefs.PHONON_VOICE
+            else -> Prefs.VOICE
+        }
         Prefs.prefs(context).edit().putString(key, codename).apply()
         rememberRecentVoice(engine, codename)
         if (kindUsesKokoro(engine)) kokoroEngine?.voice = codename
+        if (engine == EngineKind.PHONON) {
+            // PhononEngine.voice wiring lands with Unit P3.
+        }
         if (engine == EngineKind.SUPERTONIC) supertonicEngine?.voice = codename
     }
 
@@ -468,6 +488,7 @@ class SpeechPlayer(
         val key = when (engine) {
             EngineKind.SUPERTONIC -> "recentSupertonicVoices"
             EngineKind.KOKORO_SMALL -> "recentKokoroSmallVoices"
+            EngineKind.PHONON -> "recentPhononVoices"
             else -> "recentKokoroVoices"
         }
         val prefs = Prefs.prefs(context)
@@ -485,6 +506,7 @@ class SpeechPlayer(
         val key = when (engine) {
             EngineKind.SUPERTONIC -> "recentSupertonicVoices"
             EngineKind.KOKORO_SMALL -> "recentKokoroSmallVoices"
+            EngineKind.PHONON -> "recentPhononVoices"
             else -> "recentKokoroVoices"
         }
         return Prefs.prefs(context).getStringSet(key, emptySet()).orEmpty().toList()
@@ -905,7 +927,11 @@ class SpeechPlayer(
         stopAudition()
         _auditioningVoice.value = voiceCodename
         val text = auditionText.replace("I'm .", "I'm ${VoiceCatalog.shortName(voiceCodename, engine.key)}.")
-        val savedVoice = if (engine == EngineKind.SUPERTONIC) _supertonicVoice.value else _voice.value
+        val savedVoice = when (engine) {
+            EngineKind.SUPERTONIC -> _supertonicVoice.value
+            EngineKind.PHONON -> _phononVoice.value
+            else -> _voice.value
+        }
         setVoice(voiceCodename, engine)
         // Speak the audition WITHOUT binding to a note (no bookmark).
         playing = null
@@ -957,6 +983,9 @@ class SpeechPlayer(
             EngineKind.KOKORO, EngineKind.KOKORO_SMALL ->
                 if (usingSystemFallback) "System voice (model missing)"
                 else VoiceCatalog.subtitle(_voice.value, _engineKind.value.key)
+            // Unit P3 flips the fallback branch to !ModelFiles.isValid and
+            // this to the Phonon voice subtitle once the engine is wired.
+            EngineKind.PHONON -> "System voice (Phonon synthesizer not wired yet)"
             EngineKind.SUPERTONIC ->
                 if (usingSystemFallback) "System voice (model missing)"
                 else VoiceCatalog.subtitle(_supertonicVoice.value, "supertonic")

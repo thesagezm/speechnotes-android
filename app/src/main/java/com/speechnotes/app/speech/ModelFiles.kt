@@ -27,6 +27,11 @@ object ModelFiles {
 
     val kokoroKnownVoices: List<String> = VoiceCatalog.kokoroVoices
     val supertonicVoices: List<String> = VoiceCatalog.supertonicVoiceIds
+    val phononVoices: List<String> = VoiceCatalog.phononVoiceIds
+
+    /** iOS ModelManager.phononBaseURL parity — the hub's resolve root. */
+    private const val phononBaseURL =
+        "https://huggingface.co/onnx-community/phonon-31m-en-ONNX/resolve/main"
 
     // MARK: Kokoro (fp32 + uint8 share the graph)
 
@@ -106,9 +111,61 @@ object ModelFiles {
         ),
     )
 
+    /**
+     * Gradium Phonon — 31M-param English streaming TTS (Apache-2.0) via the
+     * ONNX conversion `onnx-community/phonon-31m-en-ONNX`. Two fp32 graphs
+     * (flow transformer + stateless Mimi decoder) with external weight
+     * files, the Unigram tokenizer and 26 precomputed voice bins (~192 MB
+     * total). Byte gates mirror iOS ModelManager.phononFilesAreValid();
+     * the voice bins are gated EXACTLY at 256,000 bytes (min=max) so a
+     * truncated transfer can never count as complete. fp16/q4 are
+     * deliberately NOT shipped (the Kokoro fp16 NaN lesson; iOS
+     * PHONON-PORT.md).
+     */
+    val phonon: ModelSet = ModelSet(
+        engine = EngineKind.PHONON,
+        directory = AppFiles.phononDir,
+        files = buildList {
+            add(Entry(
+                "onnx/model.onnx",
+                "$phononBaseURL/onnx/model.onnx",
+                100_000L,
+            ))
+            add(Entry(
+                "onnx/model.onnx_data",
+                "$phononBaseURL/onnx/model.onnx_data",
+                100_000_000L,
+            ))
+            add(Entry(
+                "onnx/mimi_decoder.onnx",
+                "$phononBaseURL/onnx/mimi_decoder.onnx",
+                10_000L,
+            ))
+            add(Entry(
+                "onnx/mimi_decoder.onnx_data",
+                "$phononBaseURL/onnx/mimi_decoder.onnx_data",
+                40_000_000L,
+            ))
+            add(Entry(
+                "tokenizer.json",
+                "$phononBaseURL/tokenizer.json",
+                100_000L,
+            ))
+            for (voice in VoiceCatalog.phononVoiceIds) {
+                add(Entry(
+                    "voices/$voice.bin",
+                    "$phononBaseURL/voices/$voice.bin",
+                    256_000L,
+                    maxBytes = 256_000L,
+                ))
+            }
+        },
+    )
+
     fun setFor(engine: EngineKind): ModelSet? = when (engine) {
         EngineKind.KOKORO -> kokoro
         EngineKind.KOKORO_SMALL -> kokoroSmall
+        EngineKind.PHONON -> phonon
         EngineKind.SUPERTONIC -> supertonic
         EngineKind.SYSTEM -> null
     }

@@ -25,6 +25,9 @@ object AppFiles {
         supertonicDir.mkdirs()
         supertonicOnnxDir.mkdirs()
         supertonicStylesDir.mkdirs()
+        phononDir.mkdirs()
+        phononOnnxDir.mkdirs()
+        phononVoicesDir.mkdirs()
     }
 
     val notesImagesDir: File get() = File(root, "note-images")
@@ -38,6 +41,10 @@ object AppFiles {
     val supertonicDir: File get() = File(root, "Supertonic")
     val supertonicOnnxDir: File get() = File(root, "Supertonic/onnx")
     val supertonicStylesDir: File get() = File(root, "Supertonic/voice_styles")
+    /** Gradium Phonon (31M English streaming TTS) — iOS Documents/Phonon parity. */
+    val phononDir: File get() = File(root, "Phonon")
+    val phononOnnxDir: File get() = File(root, "Phonon/onnx")
+    val phononVoicesDir: File get() = File(root, "Phonon/voices")
 
     fun notesFile() = File(root, "notes.json")
     fun notesBackupFile() = File(root, "notes.backup.json")

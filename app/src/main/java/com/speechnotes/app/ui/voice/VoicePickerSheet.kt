@@ -48,7 +48,12 @@ import com.speechnotes.app.speech.EngineKind
 @Composable
 fun VoicePickerSheet(vm: SpeechnotesViewModel, onDismiss: () -> Unit) {
     val engine by vm.player.engineKind.collectAsState()
-    val activeVoice by (if (engine == EngineKind.SUPERTONIC) vm.player.supertonicVoice else vm.player.voice).collectAsState()
+    val activeVoiceFlow = when (engine) {
+        EngineKind.SUPERTONIC -> vm.player.supertonicVoice
+        EngineKind.PHONON -> vm.player.phononVoice
+        else -> vm.player.voice
+    }
+    val activeVoice by activeVoiceFlow.collectAsState()
     val supertonicLang by vm.player.supertonicLang.collectAsState()
     val auditioning by vm.player.auditioningVoice.collectAsState()
     var query by remember { mutableStateOf("") }
@@ -91,6 +96,7 @@ fun VoicePickerSheet(vm: SpeechnotesViewModel, onDismiss: () -> Unit) {
                 text = when (engine) {
                     EngineKind.SUPERTONIC -> "Supertonic voice"
                     EngineKind.KOKORO_SMALL -> "Kokoro voice (small model)"
+                    EngineKind.PHONON -> "Phonon voice"
                     else -> "Kokoro voice"
                 },
                 style = MaterialTheme.typography.titleLarge,

@@ -56,6 +56,57 @@ object VoiceCatalog {
         VoiceDescriptor(id = id, displayName = id, accent = null, gender = if (id.startsWith("M")) "Male" else "Female")
     }
 
+    /**
+     * The Phonon pack — the hub default voice plus every named en-us/en-gb
+     * voice of gradium/phonon-voices (name/accent/gender from its metadata).
+     * Ids are the hub voice_id and match iOS VoiceCatalog.phonon verbatim
+     * (VoicePickerSheet.swift ported from the same source). The model always
+     * speaks English regardless of a voice's design language.
+     */
+    val phononVoiceIds: List<String> = listOf(
+        "default",
+        // en-us
+        "NbpkqMVS3CJeq2j8", "NIWIOv5vTi5eRMj8", "vjFyp2BcCyTlUmYb",
+        "4SZHfMpw-p46Ywgs", "bXwrkHhURL1VFJdG", "nGzMHMPAWGaJFHOo",
+        "LMDIYE0Oa377Qh6Z", "40QrMVgAxFiUnP9f", "0zLApsZfVLLNaEGl",
+        "_6Aslh2DxfmnRLmP", "qIxlZ7Ei8KvWlyQH", "d9XCyhjo4JhkHF1d",
+        // en-gb
+        "6PWnV0Nq4wu7RVBT", "GgfEkEJtxZR7gnpy", "uem82D50GRv2Dwma",
+        "y9bQqIDnyxwqK01t", "gDT1nz7Ie36ZhL-C", "m9MxpY6IUGXtWp76",
+        "X6NceqF285Gr04gb", "YyKcxPG7iIgS3jsK", "zUCxzrOrugTSis03",
+        "JOW0vchyswkQUMDS", "dME3IWyZBvmh1n1q", "Zn7g6NxLqXlJb7Qi",
+        "gfP44RlHwr2kEwk7",
+    )
+
+    val phonon: List<VoiceDescriptor> = listOf(
+        VoiceDescriptor(id = "default", displayName = "Default", accent = null, gender = "Neutral"),
+        VoiceDescriptor(id = "NbpkqMVS3CJeq2j8", displayName = "Zoey", accent = "American", gender = "Female"),
+        VoiceDescriptor(id = "NIWIOv5vTi5eRMj8", displayName = "Juniper", accent = "American", gender = "Female"),
+        VoiceDescriptor(id = "vjFyp2BcCyTlUmYb", displayName = "Everly", accent = "American", gender = "Female"),
+        VoiceDescriptor(id = "4SZHfMpw-p46Ywgs", displayName = "Harper", accent = "American", gender = "Female"),
+        VoiceDescriptor(id = "bXwrkHhURL1VFJdG", displayName = "Hadley", accent = "American", gender = "Female"),
+        VoiceDescriptor(id = "nGzMHMPAWGaJFHOo", displayName = "Delia", accent = "American", gender = "Female"),
+        VoiceDescriptor(id = "LMDIYE0Oa377Qh6Z", displayName = "Easton", accent = "American", gender = "Male"),
+        VoiceDescriptor(id = "40QrMVgAxFiUnP9f", displayName = "Micah", accent = "American", gender = "Male"),
+        VoiceDescriptor(id = "0zLApsZfVLLNaEGl", displayName = "Trevor", accent = "American", gender = "Male"),
+        VoiceDescriptor(id = "_6Aslh2DxfmnRLmP", displayName = "Russell", accent = "American", gender = "Male"),
+        VoiceDescriptor(id = "qIxlZ7Ei8KvWlyQH", displayName = "Preston", accent = "American", gender = "Male"),
+        VoiceDescriptor(id = "d9XCyhjo4JhkHF1d", displayName = "Miles", accent = "American", gender = "Male"),
+        VoiceDescriptor(id = "6PWnV0Nq4wu7RVBT", displayName = "Maeve", accent = "British", gender = "Female"),
+        VoiceDescriptor(id = "GgfEkEJtxZR7gnpy", displayName = "Freya", accent = "British", gender = "Female"),
+        VoiceDescriptor(id = "uem82D50GRv2Dwma", displayName = "Pippa", accent = "British", gender = "Female"),
+        VoiceDescriptor(id = "y9bQqIDnyxwqK01t", displayName = "Elodie-Rose", accent = "British", gender = "Female"),
+        VoiceDescriptor(id = "gDT1nz7Ie36ZhL-C", displayName = "Imogen", accent = "British", gender = "Female"),
+        VoiceDescriptor(id = "m9MxpY6IUGXtWp76", displayName = "Lottie", accent = "British", gender = "Female"),
+        VoiceDescriptor(id = "gfP44RlHwr2kEwk7", displayName = "Bryony", accent = "British", gender = "Female"),
+        VoiceDescriptor(id = "X6NceqF285Gr04gb", displayName = "Alfie", accent = "British", gender = "Male"),
+        VoiceDescriptor(id = "YyKcxPG7iIgS3jsK", displayName = "Hugh", accent = "British", gender = "Male"),
+        VoiceDescriptor(id = "zUCxzrOrugTSis03", displayName = "Edwin", accent = "British", gender = "Male"),
+        VoiceDescriptor(id = "JOW0vchyswkQUMDS", displayName = "Spencer", accent = "British", gender = "Male"),
+        VoiceDescriptor(id = "dME3IWyZBvmh1n1q", displayName = "Toby", accent = "British", gender = "Male"),
+        VoiceDescriptor(id = "Zn7g6NxLqXlJb7Qi", displayName = "Teddy", accent = "British", gender = "Male"),
+    )
+
 
     /** 31 languages → display names. */
     val supertonicLanguages: Map<String, String> = linkedMapOf(
@@ -75,9 +126,11 @@ object VoiceCatalog {
     fun auditionText(name: String): String =
         "Hi, I'm $name. The quick brown fox jumps over the lazy dog — and I run fully offline, right on this phone."
 
-    /** Descriptors for an engine: kokoro for kokoro/kokoroSmall, supertonic for supertonic. */
+    /** Descriptors for an engine: kokoro for kokoro/kokoroSmall, phonon for
+     *  phonon, supertonic for supertonic. */
     fun descriptors(engine: String): List<VoiceDescriptor> = when (engine) {
         "supertonic" -> supertonic
+        "phonon" -> phonon
         else -> kokoro
     }
 

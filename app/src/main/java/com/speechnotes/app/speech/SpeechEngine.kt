@@ -53,6 +53,7 @@ enum class EngineKind(val key: String, val label: String) {
     SYSTEM("system", "Android system voice"),
     KOKORO_SMALL("kokoroSmall", "Kokoro — small · int8 (~92 MB)"),
     KOKORO("kokoroOnnx", "Kokoro — on-device neural, 28 voices"),
+    PHONON("phonon", "Phonon — small · English (~192 MB)"),
     SUPERTONIC("supertonic", "Supertonic — best quality, multilingual");
 
     val isNeural: Boolean get() = this != SYSTEM
