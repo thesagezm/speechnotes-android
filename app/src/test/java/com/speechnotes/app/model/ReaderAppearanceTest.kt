@@ -13,17 +13,20 @@ import org.junit.Test
 class ReaderAppearanceTest {
 
     @Test
-    fun defaults_matchTheiOSStruct() {
+    fun defaults_matchTheiOSStructAndTheRustFormattingDefaults() {
         val d = ReaderAppearance()
         assertEquals("light", d.theme)
         assertEquals(100, d.fontSize)
         assertEquals("scrolled", d.flow)
         assertEquals("book", d.font)
-        assertEquals(1.6, d.lineHeight, 0.001)
+        // 1.55 = speechnotes-linux-rust EpubAppearance.line_height default.
+        assertEquals(1.55, d.lineHeight, 0.001)
         assertEquals(0.0, d.paraSpacing, 0.001)
         assertEquals(0.0, d.letterSpacing, 0.001)
         assertEquals(16, d.margin)
-        assertFalse(d.respectStyles)
+        // TRUE = the linux-rust default (respect_styles): the book's own CSS
+        // keeps typography control and the reader only themes colors.
+        assertTrue(d.respectStyles)
         assertFalse(d.autoScroll)
         assertEquals(40.0, d.autoScrollSpeed, 0.001)
         // Booleans that default TRUE (Anx-style navigation on by default).

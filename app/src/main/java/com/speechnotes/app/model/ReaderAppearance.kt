@@ -18,8 +18,8 @@ data class ReaderAppearance(
     val flow: String = "scrolled",
     /** book | serif | sans | mono ("book" = leave the publisher's font alone) */
     val font: String = "book",
-    /** 1.2...2.5 */
-    val lineHeight: Double = 1.6,
+    /** 1.2...2.5. speechnotes-linux-rust's default (EpubAppearance.line_height). */
+    val lineHeight: Double = 1.55,
     /** em added below paragraphs, 0...2 */
     val paraSpacing: Double = 0.0,
     /** px, 0...3 */
@@ -29,8 +29,11 @@ data class ReaderAppearance(
      *  there breaks the column math. */
     val margin: Int = 16,
     /** When true only theme colors are applied; the book's own CSS keeps
-     *  typography control (Anx's "use book styles" switch). */
-    val respectStyles: Boolean = false,
+     *  typography control (Anx's "use book styles" switch). Default follows
+     *  speechnotes-linux-rust's `respect_styles: true` — calibre's model:
+     *  the book as the book, and the reader's appearance is a layer on top
+     *  of it, never a re-render. */
+    val respectStyles: Boolean = true,
     val autoScroll: Boolean = false,
     /** px/s, 10...200 */
     val autoScrollSpeed: Double = 40.0,

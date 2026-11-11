@@ -4,8 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; background: transparent; }
-  #viewer { width: 100%; height: 100%; }
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; overflow-x: hidden; }
+  /* border-box is the load-bearing fix: sizeViewer() pins #viewer's width to
+     window.innerWidth px and the scrolled flow adds padding around it — with
+     content-box the total was innerWidth + 2×padding, so EVERY page was
+     wider than the screen and panned sideways (measured 444 vs 412). With
+     border-box the padding lives INSIDE the pinned width and the page fits
+     exactly. overflow-x: hidden is the belt-and-braces guard: the shell
+     never scrolls horizontally on purpose (paginated paging happens inside
+     epub.js's own container). */
+  #viewer { width: 100%; height: 100%; box-sizing: border-box; }
 </style>
 </head>
 <body>

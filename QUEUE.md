@@ -68,6 +68,46 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
+0. **2026-11-12 — EPUB READER WIDTH + LINUX-RUST FORMATTING (user): "Epub
+   books … expand once i click the tts like am i in landscape mode instead
+   of fitting the screen width … especially on a book like first aid for
+   the usmle … also make sure they follow the formating and default format
+   the way speechnotes-linux-rust does"; then "at the end commit everything
+   and give me a local build … verify it works wit waydroid then give me a
+   build".** Three proven defects + a formatting-parity wave, one unit:
+   (1) **every EPUB page was 32px wider than the screen** in the default
+   scrolled flow (measured in a real browser: shell `scrollWidth` 444 vs
+   viewport 412) — `index-android.html`'s `sizeViewer()` pins `#viewer` to
+   `innerWidth` px while `applyPadding()` added the margin padding OUTSIDE
+   that width (content-box), so the page panned sideways;
+   (2) **the live `readerAppearance({...})` command had no `flow` handler**,
+   so the scrolled padding stayed on after a flow push (the same
+   wider-than-the-screen symptom); (3) **Android's reader.js was an older
+   copy missing iOS's `injectTablePanning`** — converted books (the user's
+   First Aid for the USMLE is Calibre-converted; its CSS carries the blue
+   banners/tinted panels the Rust reader's doc celebrates) clip/overflow at
+   the page edge with no way to reach a table's lateral end. Formatting
+   parity with `speechnotes-linux-rust` (`crates/sn-ui/src/epubview.rs`):
+   `respectStyles` default **true** (`respect_styles: true`, calibre's
+   "the book as the book" — First Aid keeps its design by default),
+   `lineHeight` default **1.55** (`line_height`), and reader.js THEMES now
+   carry the Rust scheme values (light #000/#fff, sepia #39322b/#f6f3e9,
+   dark #e6e4e2/#1c1c1e, trueBlack #fff/#000) applied with the Rust
+   MECHANISM (background `!important` on the html element, body forced
+   transparent — a book painting its own body, inline styles included, can
+   no longer defeat the theme; proven in-browser against a magenta-body
+   probe book). Browser-verified fixes: scrolled and paginated both measure
+   `docScrollW == innerWidth` (412==412), the live flow switch clears the
+   padding, table-panning CSS injects per rendered section. **258/258 JVM
+   green** (ReaderAppearanceTest pins updated to the Rust defaults), x86_64
+   APK built. Divergences recorded: epub.js's paginated chapter iframe is
+   sized to the full chapter width by design (epub.js pages it internally;
+   the shell clips it — shell measured 412 in paginated, untouched); iOS's
+   env(safe-area-inset-bottom) paginated height was NOT ported (Android's
+   shell owns insets via Compose; sizeViewer pins the height explicitly);
+   iOS's goChapterFailed reporting NOT ported (interaction parity, not
+   formatting — queued). DEVICE VERIFY PENDING: the Waydroid container
+   died overnight and restarting needs root (see Session Handover).
 0. **2026-11-10 — PHONON PORT (user): "start porting phonon-tts to
    speechnotes android — also research from what speechnotes ios has done…
    it has its own phonon issues it is trying to handle so you can research
@@ -676,6 +716,32 @@ commit, `git push` after verify, and NO machine identifiers in any file.
    page.
 
 ## Session Handover
+
+- **2026-11-12 HANDOVER (EPUB width + linux-rust formatting unit).** Code
+  complete + JVM-green + APK built; **device verify BLOCKED: the Waydroid
+  container (LXC) died silently overnight** (`waydroid status`: Session
+  RUNNING, Container STOPPED, IP UNKNOWN) and `waydroid container start`
+  needs root — `sudo` asks for a password the agent does not have. The
+  systemd `waydroid-container.service` is up; only the LXC inside stopped.
+  **The user was asked to run `sudo waydroid container start`** (or restart
+  Waydroid); nothing else recovers it. After it boots: `adb connect
+  $(waydroid status | awk '/IP address/{print $3}'):5555`, install the
+  built `app-x86_64-debug.apk` (push + `pm install -r`), open the First Aid
+  EPUB from the shelf, verify: page fits the screen width edge-to-edge in
+  scrolled flow (no sideways pan), Pages mode likewise, a wide table pans
+  INSIDE the page, dark/sepia themes paint the page even where the book
+  paints its own background, and the book's design (First Aid's blue/red
+  banners) shows by default now that respectStyles defaults true. NOTE:
+  existing users who ever touched an appearance setting keep their stored
+  prefs; the new defaults land for fresh/default state. **Per the user's
+  "just hand me the builds for now": the unit IS committed (df9511b) and
+  the release pair copied to ~/Downloads as
+  `Speechnotes-0.1.5-epubfix-{arm64-v8a,x86_64}-release.apk` (md5s
+  2b0f6eae2449f483b0948ed38d2c2730 / 8f305d7d81974f6f1e218e1b3a347142,
+  aapt2-verified 0.1.5 / code 7 + ABIs) BEFORE the device pass. NOT PUSHED
+  — the push waits for the device pass per the "git push after verify"
+  rule; the device verify on the x86_64 APK remains the open item once the
+  container is back.
 
 - **2026-11-10 HANDOVER (Unit 0d session).** No claims held; Unit 0d is
   committed + pushed. The Waydroid adb path was DOWN at close (session

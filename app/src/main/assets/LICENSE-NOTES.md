@@ -13,6 +13,6 @@ banner headers. If these are ever upgraded, re-download from the same pinned
 versions and diff behavior against `Tests/EpubSpike` assumptions (spine/TOC
 shape) plus the device checklist in `Docs/PLAN-V1.4.2-EBOOKS.md`.
 
-`index.html` + `reader.js` are ours: the shell page and the glue that loads
+`index-android.html` + `reader.js` are ours: the shell page and the glue that loads
 the EPUB from the `bookscheme://` URL scheme, drives epub.js, and posts
 relocated/TOC messages back to the native side.

@@ -17,7 +17,7 @@
     fontSize: parseInt(params.get("fontSize") || "100", 10),
     flow: params.get("flow") || "scrolled",
     font: params.get("font") || "book",
-    lineHeight: parseFloat(params.get("lineHeight") || "1.6"),
+    lineHeight: parseFloat(params.get("lineHeight") || "1.55"),
     paraSpacing: parseFloat(params.get("paraSpacing") || "0"),
     letterSpacing: parseFloat(params.get("letterSpacing") || "0"),
     padding: parseInt(params.get("padding") || "16", 10),
@@ -34,11 +34,15 @@
     spineIndex: startChapter
   };
 
+  // The four schemes the family shares, with speechnotes-linux-rust's exact
+  // values (EpubView.scheme_for — calibre's schemes folded into four). The
+  // reader themes only the page's own foreground/background; the book's
+  // interior colors (First Aid's banners, its tinted panels) survive.
   var THEMES = {
-    light: { background: "#ffffff", color: "#1a1a1a" },
-    sepia: { background: "#f6efe2", color: "#3b3128" },
-    dark: { background: "#121212", color: "#d8d4cf" },
-    trueBlack: { background: "#000000", color: "#c9c9c9" }
+    light: { background: "#ffffff", color: "#000000" },
+    sepia: { background: "#f6f3e9", color: "#39322b" },
+    dark: { background: "#1c1c1e", color: "#e6e4e2" },
+    trueBlack: { background: "#000000", color: "#ffffff" }
   };
 
   var FONTS = {
@@ -74,12 +78,22 @@
   // One merged rule set (theme colors + typography) registered and selected
   // in one call — the same register+select pattern the old per-theme
   // applyTheme used, proven to update live in this webview.
+  //
+  // The colors follow speechnotes-linux-rust's EpubView mechanism exactly:
+  // the scheme's background lands on the HTML element with !important and
+  // the BODY is forced transparent, so a book that paints its own body
+  // (inline styles included — converted books do) cannot defeat the theme.
+  // The scheme's foreground rides the body, where the book's own element
+  // rules still out-rank it — the book's interior design survives.
   function applyAppearance() {
     var colors = THEMES[STATE.theme] || THEMES.light;
     var rules = {
-      body: {
-        background: colors.background,
-        color: colors.color
+      "html": {
+        "background": colors.background + " !important"
+      },
+      "body": {
+        "background": "transparent !important",
+        "color": colors.color
       }
     };
     if (!STATE.respectStyles) {
@@ -211,6 +225,7 @@
       // below the destroy() wiring).
       rendition.on("rendered", function (section, view) {
         attachGestures(view);
+        injectTablePanning(view);
       });
 
       rendition.on("relocated", function (location) {
@@ -293,6 +308,12 @@
     if (a.theme) STATE.theme = a.theme;
     if (typeof a.fontSize === "number") STATE.fontSize = a.fontSize;
     if (a.font) STATE.font = a.font;
+    // Flow: the rendition's flow is fixed at creation (epub.js cannot switch
+    // it live) — the native side rebuilds the whole webview on a flow switch.
+    // Keeping STATE.flow in step still matters: applyPadding() reads it, so a
+    // push that precedes the rebuild must not leave the scrolled padding on a
+    // paginated page (that padding was the "page wider than the screen" bug).
+    if (a.flow) STATE.flow = a.flow;
     if (typeof a.lineHeight === "number") STATE.lineHeight = a.lineHeight;
     if (typeof a.paraSpacing === "number") STATE.paraSpacing = a.paraSpacing;
     if (typeof a.letterSpacing === "number") STATE.letterSpacing = a.letterSpacing;
@@ -337,6 +358,42 @@
     window.BOOK = null;
   };
 
+  // Converted books (Calibre & friends) carry WIDE tables — many columns,
+  // no width discipline — that clip at the page edge with no way to reach
+  // the lateral end (the user report was First Aid for the USMLE). Each
+  // rendered section gets the responsive-table treatment: the table becomes
+  // a block that pans horizontally inside the page. !important because
+  // converted books' own CSS out-specifies a bare selector, and this is a
+  // usability fix, not typography — a table that fits is rendered exactly
+  // as the book styled it (fit-content keeps a narrow table shrink-wrapped
+  // instead of stretched full-width). Nested tables are reset back to
+  // native table display: the block treatment would stack their cells
+  // vertically and destroy cell layouts. Ported from the iOS reader.js
+  // (speechnotes-ios App/Resources/epubjs/reader.js) verbatim.
+  function injectTablePanning(view) {
+    var doc = view && view.document;
+    if (!doc || !doc.head) return;
+    var style = doc.createElement("style");
+    style.textContent =
+      "table { display: block !important; width: fit-content !important; " +
+      "max-width: 100% !important; overflow-x: auto !important; " +
+      "-webkit-overflow-scrolling: touch; }" +
+      "table table { display: table !important; width: auto !important; " +
+      "max-width: none !important; overflow: visible !important; }";
+    doc.head.appendChild(style);
+  }
+
+  // A swipe that starts on a pannable table pans the TABLE — the page must
+  // not also turn. Checked once per touchstart (the swipe's owning target),
+  // not on touchend where the target can differ.
+  function touchStartsOnTable(node, doc) {
+    while (node && node !== doc) {
+      if (node.tagName === "TABLE") return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
   // --- gestures inside the book iframes ---
   // Book content lives INSIDE epub.js iframes, so listeners on the shell
   // document never see page touches — the round-6 report: tap-to-hide dead
@@ -376,13 +433,17 @@
       try { window.parent.postMessage({ speechnotes: "chromeTap" }, "*"); } catch (e) { /* blocked */ }
     }, false);
 
-    var touch = { x: 0, y: 0, t: 0 };
+    var touch = { x: 0, y: 0, t: 0, onTable: false };
     doc.addEventListener("touchstart", function (event) {
       var t = event.changedTouches[0];
-      if (t) { touch.x = t.clientX; touch.y = t.clientY; touch.t = Date.now(); }
+      if (t) {
+        touch.x = t.clientX; touch.y = t.clientY; touch.t = Date.now();
+        touch.onTable = touchStartsOnTable(t.target, doc);
+      }
     }, { passive: true });
     doc.addEventListener("touchend", function (event) {
       if (STATE.flow !== "paginated") return;
+      if (touch.onTable) return;
       if (!STATE.swipeTurn) return;
       var t = event.changedTouches[0];
       if (!t) return;
