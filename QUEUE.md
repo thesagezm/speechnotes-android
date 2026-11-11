@@ -8,6 +8,17 @@ Waydroid adb IP is read from `waydroid status` each session.
 
 ## Current Phase
 
+**2026-11-11 — PHONON TTS IS IN.** The Gradium Phonon 31M engine (English
+streaming, ~192 MB, Apache-2.0) is the app's 5th engine — ported from
+speechnotes-iOS's WORKING prefill-once contract (`PhononEngine.swift` @
+`75ff1ba`) in units P1–P4 on branch `phonon-tts` (now merged): tokenizer
++ 191-step normalizer in `logic/` pinned to the SAME 14 reference fixtures
+as iOS, model plumbing + settings UI, the engine itself, and full player
+wiring. **Waydroid-verified end-to-end: download → both graphs load on
+ORT-Android 1.30.0 (contrib ops present) → GENERATING → SPEAKING at RTF
+0.21 (~4.7× realtime on the container) → natural finish → WAV export
+(rtf=0.26).** Audible confirmation is the user's on real hardware.
+
 **The Great Rewrite — through v0.1.0 prerelease.** TTS fixed (Unit 1), perf
 pass (Unit 2, release cold start ~370 ms), settings subpages (Unit 3),
 Kokoro-small quantized (Unit 4), GitHub push (Unit 5), settings-parity audit
@@ -57,6 +68,20 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
+0. **2026-11-10 — PHONON PORT (user): "start porting phonon-tts to
+   speechnotes android — also research from what speechnotes ios has done…
+   it has its own phonon issues it is trying to handle so you can research
+   from there but do it your way and in the most compatible way"; then
+   "use latest fixes from speechnotes-ios" and "do this work on a separate
+   branch so its easy to revert".** New engine wave on branch `phonon-tts`:
+   Gradium Phonon 31M (English streaming TTS, Apache-2.0) via
+   `onnx-community/phonon-31m-en-ONNX` — the app's 5th engine slot (iOS
+   picker order: system → Kokoro → **Phonon** → Supertonic). Plan approved;
+   contract ported from iOS `Docs/PHONON-PORT.md` + `PhononEngine.swift`
+   AT COMMIT `49e8ab7` (the repeat-spiral KV fix: head-major
+   `[1,heads,seq,dim]` cache slicing + the single +8/call counter — the
+   old +7/+8 two-counter split is obsolete; do NOT port from older
+   snapshots). Units P1–P4 under In Flight.
 0. **2026-11-10 — the ORT/Android acceleration advisory (user-pasted).** An
    external plan written for the iOS→Android port (Core ML/ANE → ORT EPs,
    Waydroid-not-a-benchmark, gap diagnosis, pipeline corrections). Analysis
@@ -164,6 +189,126 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **BRANCH `phonon-tts` (2026-11-10) — the Phonon engine wave, off `main`
+  at `1025854`.** All Phonon units landed here; MERGED to main after P4
+  verified (branch kept for revert). Rationale: user asked for easy revert.
+- **2026-11-11 — Unit P4: the Waydroid device pass — DONE. PHONON SPEAKS
+  ON WAYDROID.** Evidence (logcat, pid 5927/6514, 2026-11-11):
+  - **Download:** the full ~192 MB set (2 graphs + external weights +
+    tokenizer + 26 voice bins) over the flaky HF CDN — two
+    `StreamResetException: stream was reset: CANCEL` resets (33 MB into
+    model.onnx_data, 29 MB into mimi_decoder.onnx_data) both recovered by
+    the ModelManager resume/retry; validity gates all passed.
+  - **THE LOAD-BEARING CHECKPOINT RESOLVED: both fp32 graphs LOAD on
+    ORT-Android 1.30.0** (the full Maven AAR ships the com.microsoft
+    contrib ops — GroupQueryAttention/RotaryEmbedding/QuickGelu — and
+    accepts zero-size input tensors; empirically proven, not from docs).
+  - **Synthesis:** `PhononEngine: 44 tokens → 10.24s audio (128 frames, 16
+    calls) in 2.15s, eos peak 9.74 at call 15 (Default)` — the prefill-once
+    loop end-to-end with the healthy deep-negative-then-spike EOS
+    signature; `GENERATING → SPEAKING` → natural `→ IDLE`.
+  - **SPEED: per-chunk RTF 0.21 (speak) / 0.26 (export)** on the container
+    — ~4.7× faster than realtime, vs Kokoro-small's measured RTF ≈ 1.9 on
+    the same box. Phonon is by far the fastest neural engine here. Unit
+    0d's ChunkTimeline covered it with zero extra code.
+  - **WAV export:** `export 1/1: chars=110 audio=9.60s render=2.52s
+    rtf=0.26` — non-trivial audio; the share chooser showed the container's
+    "No apps can perform this action" (no share targets on bare Waydroid —
+    container artifact, not an export failure).
+  - **Memory rules on device:** engine-switch unload fired (Supertonic →
+    phonon), and the 5-min idle unload unloaded Phonon's sessions
+    (`21:34:32 model unloaded (idle)`).
+  - Audible confirmation stays with the user on real hardware (Waydroid
+    audio-HAL caveat; the drain ended ~0.7 s after SPEAKING — the known
+    container pathology).
+  - **Two device-found bugs fixed in this unit:** (1) the tokenizer path —
+    iOS's downloader maps EVERY non-voice file into `Phonon/onnx/`
+    (`(subpath as NSString).lastPathComponent` into phononOnnxDirectory),
+    the Android ModelSet had tokenizer.json at the Phonon root → ENOENT on
+    first play; ModelFiles now uses `onnx/tokenizer.json` (iOS layout
+    parity). (2) `SpeechPlayer.export()`'s `when(engine)` had NO
+    PhononEngine branch — the WAV export silently reported the system-voice
+    failure; the branch is added (mirrors Kokoro's). Also fixed mid-pass:
+    **Android's `Pattern.compile` REJECTS `UNICODE_CHARACTER_CLASS` with
+    "Unsupported flags: 256"** (flag 0x100 = 256 — a desktop-JVM-only
+    flag; the JVM tests passed on the host and the device round caught it
+    — recorded in PhononNormalizerTable's doc) → the table now carries the
+    EXPLICIT reference whitespace set (Rust regex's \s = White_Space
+    property) instead of `\s`/`\S`, identical on the desktop JVM, on
+    Android, and in the reference; 258/258 stayed green. The load-failure
+    log now carries the exception class + top frames (the device round
+    diagnosed "Unsupported flags: 256" from a bare message the first
+    time).
+  - Device state left: Phonon engine selected + downloaded + Ready; the
+    test note played; share sheet dismissed.
+- **2026-11-11 — Unit P3: PhononEngine (the WORKING prefill-once recipe)
+  + full player wiring — CODE-COMPLETE (258/258 green, x86_64 APK 89 MB);
+  DEVICE CHECKPOINT PENDING.** Ported from speechnotes-iOS
+  `PhononEngine.swift` AT COMMIT `75ff1ba` — the user confirmed Phonon
+  works on iOS there and told us to use the latest. The contract CHANGED
+  under us mid-wave (iOS commits 1b232f5 + 75ff1ba, 2026-11-11):
+  **prefill-once** — call 0 prefills voice+text against an EMPTY cache,
+  every present.* is fed back WHOLE (prompt K/V frozen forever), calls 1+
+  feed an EMPTY prompt (`input_ids` [1,0], voice [1,0,512] zero-size
+  tensors) and positions collapse to arange(kv_rows, kv_rows+8). The old
+  re-run-prompt recipe caused the sentence-end long tail (layers 1–5
+  attended to latents AFTER them; 8/120 degenerate x86 runs → 0/120).
+  Whole-present feedback DELETES the per-head KV copy — the head-major
+  striding bug class is gone. Two counters remain (kvRows: P+7 after
+  prefill, +8/call; latentCount: +8/call). Soft-EOS insurance: 2
+  consecutive calls with per-call eos peak > 1.0 without a real crossing
+  stops the chunk; budget stays hub ×1.5; non-finite latent guard; eos
+  peak logged. Engine: `speech/PhononEngine.kt` (tensor plumbing via
+  direct native-order ByteBuffers; the previous result's present.* tensors
+  ARE the next call's past.* inputs — previous result closes when the new
+  one exists; SplitMix64+Box-Muller noise identical to iOS — Kotlin needs
+  `uL` for the over-Long hex constants). Wiring: SpeechPlayer phonon()
+  singleton + resolveEngine + rebuildEngine fallback/unload + setVoice +
+  idle-unload + shutdown + voice description (P2's temporary system()
+  routing is gone). **NEXT (P4): the load-bearing device checkpoint —
+  install on Waydroid, download the ~192 MB set, select Phonon, play:
+  (a) ORT-Android 1.30.0 must load the graphs (com.microsoft contrib ops:
+  GroupQueryAttention/RotaryEmbedding/QuickGelu — the full Maven AAR is
+  documented as the full build, unproven on device); (b) zero-size input
+  tensors must be accepted; (c) GENERATING → SPEAKING with rtf= lines;
+  (d) WAV export non-trivial.** If (a) fails: fallback = the fuller
+  onnxruntime-training-android AAR (documented, not built speculatively).
+- **2026-11-11 — Unit P2: Phonon model plumbing + settings UI — DONE
+  (258/258 green, x86_64 APK 89 MB).** `EngineKind.PHONON` ("Phonon —
+  small · English (~192 MB)", picker slot between Kokoro and Supertonic =
+  iOS order); `AppFiles.phonon{,Onnx,Voices}Dir` ("Phonon/onnx",
+  "Phonon/voices", iOS parity); `ModelFiles.phonon` (hub
+  `onnx-community/phonon-31m-en-ONNX`: 2 graphs + external weights +
+  tokenizer + **26 voice bins gated EXACTLY 256,000 bytes** min=max so
+  truncation never counts as complete); `ModelManager._phononState` +
+  refresh/isReadyCached/stateFlowFor branches + **deleteModel guard fix**
+  (Phonon's tokenizer.json/voices must NOT hit the shared-Kokoro-file
+  exclusion); `VoiceCatalog.phononVoiceIds` + 26 descriptors (iOS
+  VoiceCatalog verbatim); `Prefs.PHONON_VOICE = "phononVoice"` +
+  `"recentPhononVoices"` (iOS-shared key names); SpeechPlayer
+  `phononVoice` StateFlow + setVoice/recents/audition/description
+  branches. **P2 semantics: PHONON is selectable/downloadable/configurable
+  but playback routes to system() (usingSystemFallback=true
+  unconditionally) until Unit P3 wires PhononEngine** — recorded in code
+  comments at both sites. UI: SpeechSettingsScreen (readyNow, VoiceRow,
+  ModelDownloadRow, phononState collect) + VoicePickerSheet ("Phonon
+  voice" title + phononVoice active-voice flow) — descriptors(route) by
+  engine.key made phonon work there with no extra UI code. Next: P3.
+- **2026-11-10 — Unit P1: the Phonon tokenizer + normalizer in `logic/`
+  — DONE (258/258 green, x86_64 APK 89 MB).** New
+  `logic/PhononNormalizerTable.kt` (the hub's 191-step chain as ordered
+  data, verbatim port of the iOS generated table) and
+  `logic/PhononTokenizer.kt` (Metaspace pre-tokenizer + Unigram Viterbi +
+  byte fallback, ported from `PhononTokenizer.swift` @ `49e8ab7`; strict
+  UTF-8 decode so invalid byte runs skip pieces exactly like Swift's
+  `String(bytes:encoding:)`; Prepend-skips-empty guarded). Parity: the SAME
+  fixture files as iOS now live in `app/src/test/resources/`
+  (`phonon-tokenizer.json` = the real hub tokenizer, 169,734 bytes;
+  `phonon-tokenizer-fixtures.json` = the 14 reference-verified cases) →
+  Android/iOS/reference emit identical ids by construction. 5 new
+  `PhononTokenizerTest` tests. One port translation recorded: ICU
+  `\p{Alphabetic}` → Java `\p{IsAlphabetic}` (same property; first test run
+  failed on it, fixtures pin the behavior). Next: Unit P2.
 - **2026-11-10 — Unit 0d: per-chunk RTF timeline (the acceleration
   advisory's diagnostic table) — SHIPPED, observability-only.**
   New `speech/ChunkTimeline.kt` (pure, JVM-tested, Locale.US-pinned) +

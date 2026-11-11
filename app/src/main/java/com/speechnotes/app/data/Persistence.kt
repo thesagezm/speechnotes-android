@@ -65,6 +65,7 @@ object Prefs {
     const val HAS_ONBOARDED = "hasOnboarded"
     const val ENGINE_KIND = "engineKind"
     const val VOICE = "voice"
+    const val PHONON_VOICE = "phononVoice"
     const val SUPERTONIC_VOICE = "supertonicVoice"
     const val SUPERTONIC_LANG = "supertonicLang"
     const val SUPERTONIC_QUALITY = "supertonicRenderQuality"

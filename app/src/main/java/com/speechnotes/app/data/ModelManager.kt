@@ -66,6 +66,9 @@ class ModelManager(private val context: Context) {
     private val _supertonicState = MutableStateFlow<DownloadState>(DownloadState.NotDownloaded)
     val supertonicState: StateFlow<DownloadState> = _supertonicState.asStateFlow()
 
+    private val _phononState = MutableStateFlow<DownloadState>(DownloadState.NotDownloaded)
+    val phononState: StateFlow<DownloadState> = _phononState.asStateFlow()
+
     /** Called on the main thread when any model becomes ready. */
     var onReady: (() -> Unit)? = null
 
@@ -76,6 +79,7 @@ class ModelManager(private val context: Context) {
         _kokoroState.value = stateFor(EngineKind.KOKORO)
         _kokoroSmallState.value = stateFor(EngineKind.KOKORO_SMALL)
         _supertonicState.value = stateFor(EngineKind.SUPERTONIC)
+        _phononState.value = stateFor(EngineKind.PHONON)
     }
 
     fun stateFor(engine: EngineKind): DownloadState {
@@ -95,6 +99,7 @@ class ModelManager(private val context: Context) {
         EngineKind.KOKORO -> _kokoroState.value is DownloadState.Ready
         EngineKind.KOKORO_SMALL -> _kokoroSmallState.value is DownloadState.Ready
         EngineKind.SUPERTONIC -> _supertonicState.value is DownloadState.Ready
+        EngineKind.PHONON -> _phononState.value is DownloadState.Ready
         EngineKind.SYSTEM -> true
     }
 
@@ -123,11 +128,13 @@ class ModelManager(private val context: Context) {
         val set = ModelFiles.setFor(engine) ?: return
         // The Kokoro tiers share a directory; deleting one tier removes only
         // its own model file, never the shared tokenizer/voices. The other
-        // engines own their directories outright.
+        // engines own their directories outright — Phonon's tokenizer.json
+        // and voices/ bins live under Phonon/ and must delete with the set.
         set.files.forEach { entry ->
             val file = File(set.directory, entry.name)
             if (!file.isFile) return@forEach
             val sharedKokoroFile = engine != EngineKind.SUPERTONIC &&
+                engine != EngineKind.PHONON &&
                 (entry.name.contains("tokenizer") || entry.name.contains("voices"))
             if (!sharedKokoroFile) runCatching { file.delete() }
         }
@@ -236,6 +243,7 @@ class ModelManager(private val context: Context) {
         EngineKind.KOKORO -> _kokoroState
         EngineKind.KOKORO_SMALL -> _kokoroSmallState
         EngineKind.SUPERTONIC -> _supertonicState
+        EngineKind.PHONON -> _phononState
         EngineKind.SYSTEM -> null
     }
 
