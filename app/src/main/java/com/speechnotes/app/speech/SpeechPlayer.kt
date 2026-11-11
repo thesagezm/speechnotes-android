@@ -1066,6 +1066,18 @@ class SpeechPlayer(
                     }
                 })
             }
+            is PhononEngine -> scope.launch {
+                engine.core.exportWav(cleaned, output, { p ->
+                    _exportState.value = ExportState.Running(p)
+                }, { file ->
+                    if (file != null) {
+                        _shareFile.value = file
+                        _exportState.value = ExportState.Idle
+                    } else {
+                        _exportState.value = ExportState.Failed("Export produced no audio.")
+                    }
+                })
+            }
             else -> _exportState.value = ExportState.Failed("The system voice can't export audio — pick a neural engine.")
         }
     }

@@ -207,7 +207,14 @@ class PhononEngine : SpeechEngine {
             decodeSession = null
             tokenizer = null
             modelLoadAttempted = false
-            LogStore.error("PhononEngine: model load failed: ${e.message} — will retry on next speak")
+            // The failing call and the top frames ride the log — the device
+            // round diagnosed "Unsupported flags: 256" with nothing but the
+            // message the first time.
+            LogStore.error(
+                "PhononEngine: model load failed: ${e.javaClass.simpleName}: ${e.message} @ " +
+                    e.stackTrace.take(5).joinToString(" | ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" } +
+                    " — will retry on next speak"
+            )
         }
     }
 

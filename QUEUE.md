@@ -8,6 +8,17 @@ Waydroid adb IP is read from `waydroid status` each session.
 
 ## Current Phase
 
+**2026-11-11 — PHONON TTS IS IN.** The Gradium Phonon 31M engine (English
+streaming, ~192 MB, Apache-2.0) is the app's 5th engine — ported from
+speechnotes-iOS's WORKING prefill-once contract (`PhononEngine.swift` @
+`75ff1ba`) in units P1–P4 on branch `phonon-tts` (now merged): tokenizer
++ 191-step normalizer in `logic/` pinned to the SAME 14 reference fixtures
+as iOS, model plumbing + settings UI, the engine itself, and full player
+wiring. **Waydroid-verified end-to-end: download → both graphs load on
+ORT-Android 1.30.0 (contrib ops present) → GENERATING → SPEAKING at RTF
+0.21 (~4.7× realtime on the container) → natural finish → WAV export
+(rtf=0.26).** Audible confirmation is the user's on real hardware.
+
 **The Great Rewrite — through v0.1.0 prerelease.** TTS fixed (Unit 1), perf
 pass (Unit 2, release cold start ~370 ms), settings subpages (Unit 3),
 Kokoro-small quantized (Unit 4), GitHub push (Unit 5), settings-parity audit
@@ -179,8 +190,57 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 ## In Flight / Last Push
 
 - **BRANCH `phonon-tts` (2026-11-10) — the Phonon engine wave, off `main`
-  at `1025854`.** All Phonon units land here; merge to main after P4
-  verifies. Rationale: user asked for easy revert.
+  at `1025854`.** All Phonon units landed here; MERGED to main after P4
+  verified (branch kept for revert). Rationale: user asked for easy revert.
+- **2026-11-11 — Unit P4: the Waydroid device pass — DONE. PHONON SPEAKS
+  ON WAYDROID.** Evidence (logcat, pid 5927/6514, 2026-11-11):
+  - **Download:** the full ~192 MB set (2 graphs + external weights +
+    tokenizer + 26 voice bins) over the flaky HF CDN — two
+    `StreamResetException: stream was reset: CANCEL` resets (33 MB into
+    model.onnx_data, 29 MB into mimi_decoder.onnx_data) both recovered by
+    the ModelManager resume/retry; validity gates all passed.
+  - **THE LOAD-BEARING CHECKPOINT RESOLVED: both fp32 graphs LOAD on
+    ORT-Android 1.30.0** (the full Maven AAR ships the com.microsoft
+    contrib ops — GroupQueryAttention/RotaryEmbedding/QuickGelu — and
+    accepts zero-size input tensors; empirically proven, not from docs).
+  - **Synthesis:** `PhononEngine: 44 tokens → 10.24s audio (128 frames, 16
+    calls) in 2.15s, eos peak 9.74 at call 15 (Default)` — the prefill-once
+    loop end-to-end with the healthy deep-negative-then-spike EOS
+    signature; `GENERATING → SPEAKING` → natural `→ IDLE`.
+  - **SPEED: per-chunk RTF 0.21 (speak) / 0.26 (export)** on the container
+    — ~4.7× faster than realtime, vs Kokoro-small's measured RTF ≈ 1.9 on
+    the same box. Phonon is by far the fastest neural engine here. Unit
+    0d's ChunkTimeline covered it with zero extra code.
+  - **WAV export:** `export 1/1: chars=110 audio=9.60s render=2.52s
+    rtf=0.26` — non-trivial audio; the share chooser showed the container's
+    "No apps can perform this action" (no share targets on bare Waydroid —
+    container artifact, not an export failure).
+  - **Memory rules on device:** engine-switch unload fired (Supertonic →
+    phonon), and the 5-min idle unload unloaded Phonon's sessions
+    (`21:34:32 model unloaded (idle)`).
+  - Audible confirmation stays with the user on real hardware (Waydroid
+    audio-HAL caveat; the drain ended ~0.7 s after SPEAKING — the known
+    container pathology).
+  - **Two device-found bugs fixed in this unit:** (1) the tokenizer path —
+    iOS's downloader maps EVERY non-voice file into `Phonon/onnx/`
+    (`(subpath as NSString).lastPathComponent` into phononOnnxDirectory),
+    the Android ModelSet had tokenizer.json at the Phonon root → ENOENT on
+    first play; ModelFiles now uses `onnx/tokenizer.json` (iOS layout
+    parity). (2) `SpeechPlayer.export()`'s `when(engine)` had NO
+    PhononEngine branch — the WAV export silently reported the system-voice
+    failure; the branch is added (mirrors Kokoro's). Also fixed mid-pass:
+    **Android's `Pattern.compile` REJECTS `UNICODE_CHARACTER_CLASS` with
+    "Unsupported flags: 256"** (flag 0x100 = 256 — a desktop-JVM-only
+    flag; the JVM tests passed on the host and the device round caught it
+    — recorded in PhononNormalizerTable's doc) → the table now carries the
+    EXPLICIT reference whitespace set (Rust regex's \s = White_Space
+    property) instead of `\s`/`\S`, identical on the desktop JVM, on
+    Android, and in the reference; 258/258 stayed green. The load-failure
+    log now carries the exception class + top frames (the device round
+    diagnosed "Unsupported flags: 256" from a bare message the first
+    time).
+  - Device state left: Phonon engine selected + downloaded + Ready; the
+    test note played; share sheet dismissed.
 - **2026-11-11 — Unit P3: PhononEngine (the WORKING prefill-once recipe)
   + full player wiring — CODE-COMPLETE (258/258 green, x86_64 APK 89 MB);
   DEVICE CHECKPOINT PENDING.** Ported from speechnotes-iOS

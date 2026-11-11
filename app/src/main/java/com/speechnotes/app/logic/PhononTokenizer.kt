@@ -100,8 +100,12 @@ class PhononTokenizer(tokenizerData: ByteArray) {
         for (step in PhononNormalizerTable.steps) {
             when (step) {
                 is PhononNormalizerStep.Replace -> steps.add(
+                    // Flags-free compile: Android's Pattern REJECTS
+                    // UNICODE_CHARACTER_CLASS ("Unsupported flags: 256" —
+                    // hit on device). The table carries the reference
+                    // whitespace set explicitly instead of leaning on \s.
                     CompiledStep.Replace(
-                        Pattern.compile(step.pattern, Pattern.UNICODE_CHARACTER_CLASS),
+                        Pattern.compile(step.pattern),
                         step.replacement,
                     )
                 )

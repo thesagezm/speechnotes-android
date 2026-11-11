@@ -146,8 +146,12 @@ object ModelFiles {
                 "$phononBaseURL/onnx/mimi_decoder.onnx_data",
                 40_000_000L,
             ))
+            // iOS layout parity: EVERY non-voice file lands under onnx/
+            // (ModelManager.startPhononDownload maps each subpath's last
+            // component into phononOnnxDirectory) — the engine reads the
+            // tokenizer from there too.
             add(Entry(
-                "tokenizer.json",
+                "onnx/tokenizer.json",
                 "$phononBaseURL/tokenizer.json",
                 100_000L,
             ))
