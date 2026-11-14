@@ -68,6 +68,27 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
+0. **2026-11-14 — PHONON CLICK+GAP PORT (user): "There are some recent
+   changes made to phonon on speechnotes-ios to improve sound quality
+   reduce the click and gap... incorporate this".** The iOS change is ONE
+   commit — `cf501b2` (2026-11-13, "Phonon chunk click+gap"), and its two
+   parts live in the SHARED streaming core (StreamingTTSPlaybackCore.swift
+   → our StreamingPlaybackCore.kt), so every streaming engine benefits:
+   (1) **raised-cosine boundary fades** — 5 ms in / 12 ms out on every
+   chunk at both sinks (playback + WAV export): engines cut PCM at
+   synthesis boundaries and each chunk starts from fresh model state, so
+   the outgoing chunk's last amplitude and the incoming chunk's first are
+   unrelated samples — that step is the broadband click at the end of
+   every chunk; a few ms of ramp turns the step into a slope;
+   (2) **keepalive silence shortened 0.5 s → 0.2 s with ROLLING re-arms**
+   — every slice of bridge silence enters the FIFO ahead of the chunk
+   being rendered, so its length IS added latency: the old Android bridge
+   pre-wrote ONE buffer sized to outlast the expected render
+   (last render + 1 s margin → up to ~1 s of dead air after the chunk was
+   already synthesized — the "slight delay before the next chunk resumes"
+   report). Ported as Unit GO1 (see In Flight). Device evidence pending
+   (Waydroid container down; audible click/gap confirmation is the
+   user's on real hardware).
 0. **2026-11-12 — EPUB READER WIDTH + LINUX-RUST FORMATTING (user): "Epub
    books … expand once i click the tts like am i in landscape mode instead
    of fitting the screen width … especially on a book like first aid for
@@ -229,6 +250,54 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-11-14 — Unit GO1: the Phonon click+gap port (iOS `cf501b2`) —
+  CODE-COMPLETE (265/265 green, x86_64 APK built); DEVICE PASS PENDING.**
+  Two changes in the shared streaming core, one per iOS half:
+  - **Click → new pure `speech/ChunkBoundaryFades.kt`** —
+    `apply(samples, sampleRate)`: raised-cosine 5 ms in / 12 ms out
+    (iOS constants verbatim), fade lengths clamped to half the chunk, the
+    input array never mutated. Applied at BOTH chunk sinks — the speak
+    loop (AFTER the wall-clock measurement so the per-chunk RTF line stays
+    inference-only) and `exportWav` (same fades, so an exported WAV does
+    not carry the click its live twin no longer has). 7 new
+    `ChunkBoundaryFadesTest` pins (zero at both ends, exact raised-cosine
+    factors mid-ramp, middle untouched, envelope never exceeded, degenerate
+    clamps, empty/invalid-rate passthrough, input immutability).
+  - **Gap → the bridge is now a ROLLING FEEDER.** Old behavior:
+    `bridgeIfDry` pre-wrote ONE keepalive of
+    `max(0.5, lastRender + 1.0)` s — the sink never drained, but every
+    unconsumed second of that silence sat in the FIFO AHEAD of the chunk,
+    so each dry-bank resume carried ~1 s of dead air after the chunk was
+    already synthesized. New behavior (iOS cf501b2's completion re-arms,
+    translated — the divergence is only where the re-arm runs): arming
+    starts a small feeder thread that writes
+    `RenderAheadBankPolicy.BRIDGE_SLICE_SECONDS` = **0.2 s** slices while
+    the bank is dry and the render is in flight (re-checking the dry
+    condition between slices; a FRESH stop flag per arm so a late-exiting
+    predecessor can never be revived), and the producer STOPS and JOINS it
+    before writing the chunk — silence and chunk audio never interleave in
+    the FIFO, the track never drains (the frozen-head pathology stays
+    fixed), and the dead air is bounded by one slice remainder (≤ 0.2 s).
+    `RenderAheadBankPolicy`: `bridgeSilenceSeconds()` +
+    `BRIDGE_MARGIN_SECONDS` DELETED (dead with the one-shot design —
+    `BRIDGE_MARGIN_SECONDS`'s outlast-the-render requirement now lives in
+    the schedule() prebuffer, unchanged); `totalFramesWritten` is
+    `@Volatile` (feeder writes it); `stop()` flips the feeder's flag and
+    drops it without joining (stop() runs on main; the generation guard
+    exits the feeder within one round). The 120 s session cap, the
+    incident ledger, the `bridge=on` timeline fact and the
+    `keepalive bridge ended` log all keep their semantics; the feeder's
+    slice write catches `IllegalStateException` (track released under it
+    by stop()/sample-rate change) and logs the failure only when its
+    session is still live.
+  - **Evidence:** constrained gradle (flock, --no-daemon, 1 worker,
+    in-process Kotlin) → BUILD SUCCESSFUL, test-results XML =
+    **265 tests / 0 failures / 0 errors** (258 prior + 7 new − 1 replaced
+    bridge-sizing pin → `BRIDGE_SLICE_SECONDS` = 0.2 iOS pin), x86_64
+    debug APK built (89 MB). NO device pass yet: the Waydroid container is
+    down (needs the user's root restart) — the audible click/gap verdict
+    is the user's on real hardware regardless (Waydroid audio-HAL
+    caveat).
 - **BRANCH `phonon-tts` (2026-11-10) — the Phonon engine wave, off `main`
   at `1025854`.** All Phonon units landed here; MERGED to main after P4
   verified (branch kept for revert). Rationale: user asked for easy revert.
@@ -717,31 +786,43 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Session Handover
 
-- **2026-11-12 HANDOVER (EPUB width + linux-rust formatting unit).** Code
-  complete + JVM-green + APK built; **device verify BLOCKED: the Waydroid
-  container (LXC) died silently overnight** (`waydroid status`: Session
-  RUNNING, Container STOPPED, IP UNKNOWN) and `waydroid container start`
-  needs root — `sudo` asks for a password the agent does not have. The
-  systemd `waydroid-container.service` is up; only the LXC inside stopped.
-  **The user was asked to run `sudo waydroid container start`** (or restart
-  Waydroid); nothing else recovers it. After it boots: `adb connect
-  $(waydroid status | awk '/IP address/{print $3}'):5555`, install the
-  built `app-x86_64-debug.apk` (push + `pm install -r`), open the First Aid
-  EPUB from the shelf, verify: page fits the screen width edge-to-edge in
-  scrolled flow (no sideways pan), Pages mode likewise, a wide table pans
-  INSIDE the page, dark/sepia themes paint the page even where the book
-  paints its own background, and the book's design (First Aid's blue/red
-  banners) shows by default now that respectStyles defaults true. NOTE:
-  existing users who ever touched an appearance setting keep their stored
-  prefs; the new defaults land for fresh/default state. **Per the user's
-  "just hand me the builds for now": the unit IS committed (df9511b) and
-  the release pair copied to ~/Downloads as
-  `Speechnotes-0.1.5-epubfix-{arm64-v8a,x86_64}-release.apk` (md5s
-  2b0f6eae2449f483b0948ed38d2c2730 / 8f305d7d81974f6f1e218e1b3a347142,
-  aapt2-verified 0.1.5 / code 7 + ABIs) BEFORE the device pass. NOT PUSHED
-  — the push waits for the device pass per the "git push after verify"
-  rule; the device verify on the x86_64 APK remains the open item once the
-  container is back.
+- **2026-11-14 HANDOVER (Unit GO1 — Phonon click+gap port; EPUB-F1 device
+  pass still pending).** GO1 is committed on main; the tree is green
+  (265/265) with the x86_64 debug APK built. **TWO device passes now wait
+  on the same blocked resource: the Waydroid container is DOWN
+  (`waydroid status`: Session STOPPED, Container STOPPED) and
+  `waydroid container start` needs the user's root password — the user was
+  asked to run it (or restart Waydroid); nothing else recovers it.** After
+  it boots: `adb connect $(waydroid status | awk '/IP address/{print
+  $3}'):5555`, install the current `app-x86_64-debug.apk` (push +
+  `pm install -r`, and md5 the installed `base.apk` against your output
+  first — silent overwrites have cost two sessions a false detour), then:
+  - **GO1 (click+gap):** select Phonon (already downloaded + Ready from
+    P4), play the test note, and read the logcat under `Speechnotes`: the
+    per-chunk `chunk i/N` timeline lines stay the same shape; a dry-bank
+    resume now logs `keepalive bridge — … feeding 0.20s silence slices`
+    and the gap between sentences should shrink to ≤ 0.2 s (was ~1 s on
+    slow renders). The click fix is audible only on real hardware — the
+    user confirms; Waydroid's evidence is that synthesis/playback run
+    clean with no new error lines and WAV export still produces non-trivial
+    audio (`export 1/1: … rtf=`).
+  - **EPUB-F1 (from the 2026-11-12 unit, commit `5d37645`):** open the
+    First Aid EPUB — page fits the screen width edge-to-edge in scrolled
+    flow (no sideways pan), Pages mode likewise, a wide table pans INSIDE
+    the page, dark/sepia themes paint the page even where the book paints
+    its own background, and First Aid's blue/red banners show by default
+    (respectStyles now defaults true). NOTE: existing users who ever
+    touched an appearance setting keep their stored prefs; the new
+    defaults land for fresh/default state.
+  - **Releases already handed over before verify (user asked):** GO1's
+    pair `Speechnotes-0.1.5-clickgap-{arm64,x86_64}-release.apk` in
+    ~/Downloads (md5s 9e3b07dc1244fa0d96770201ed1594f8 /
+    926c2d32becc8e5c3f172d6c268ab043, aapt2-verified 0.1.5 / code 7 +
+    ABIs; the new `feeding %.2fs silence slices` log string confirmed in
+    classes.dex) — this pair SUPERSEDES the EPUB-F1 pair
+    (`Speechnotes-0.1.5-epubfix-…`, md5s 2b0f6eae… / 8f305d7d…) since it
+    carries both units. NOT PUSHED: both units wait for their device pass
+    per the "git push after verify" rule.
 
 - **2026-11-10 HANDOVER (Unit 0d session).** No claims held; Unit 0d is
   committed + pushed. The Waydroid adb path was DOWN at close (session

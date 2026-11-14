@@ -86,6 +86,15 @@ class StreamingPlaybackCore(
     private var trackAttached = false
     private var trackStarted = false
     private var generation = 0
+
+    /**
+     * Total frames ever written to the pipeline (real chunks + bridge
+     * silence). Written from the generate queue AND the bridge feeder
+     * (while the producer is parked inside the render or its join), read
+     * from both and from the completion poller on main — @Volatile for the
+     * cross-thread visibility; single-writer-at-a-time, so no other sync.
+     */
+    @Volatile
     private var totalFramesWritten = 0
 
     /**
@@ -108,21 +117,29 @@ class StreamingPlaybackCore(
     @Volatile
     private var lastChunkRenderSeconds: Double = 0.0
 
-    // MARK: Never-run-dry keepalive (the silence bridge, iOS 241888e).
-    // When the playback head consumes everything written while the next
-    // chunk is still to be rendered, the AudioTrack's real queue is dry —
-    // AudioFlinger then underruns and DISABLES the track, the head freezes,
-    // and the session dies in silence even though synthesis is about to
-    // land (the Waydroid frozen-head-at-0 pathology: HAL write blocked →
-    // BUFFER TIMEOUT: remove from active list → completion poller spins at
-    // head 0). The bridge pre-writes keepalive silence before the render so
-    // the track never idles. DIVERGENCE from iOS: AVAudioPlayerNode re-arms
-    // 0.5 s buffers from their own completions on the main thread while the
-    // renderer works; Android's single-writer generate queue cannot write
-    // mid-render, so it writes ONE keepalive sized to outlast the expected
-    // render (measured last render + margin) at the moment it admits the
-    // chunk. The listener hears the same silence they would have heard
-    // anyway — but speech RESUMES when synthesis lands.
+    // MARK: Never-run-dry keepalive (the silence bridge, iOS 241888e; the
+    // ROLLING re-arms are iOS cf501b2). When the playback head consumes
+    // everything written while the next chunk is still to be rendered, the
+    // AudioTrack's real queue is dry — AudioFlinger then underruns and
+    // DISABLES the track, the head freezes, and the session dies in silence
+    // even though synthesis is about to land (the Waydroid frozen-head-at-0
+    // pathology: HAL write blocked → BUFFER TIMEOUT: remove from active
+    // list → completion poller spins at head 0). The bridge keeps the track
+    // fed with silence while the render is in flight.
+    //
+    // The first Android bridge (R2) pre-wrote ONE keepalive sized to outlast
+    // the expected render (last render + 1 s margin) — the sink never
+    // drained, but every slice of that silence is ADDED LATENCY: it sits in
+    // the FIFO ahead of the chunk, so the listener waited out ~1 s of dead
+    // air after the chunk was already synthesized. iOS cf501b2 shortened its
+    // keepalive to 0.2 s and re-arms buffers from their own completions
+    // while the queue is dry; the Android mechanism now matches that shape
+    // (the divergence is only WHERE the re-arm runs): a small feeder thread
+    // writes 0.2 s slices while the producer is busy rendering, re-checking
+    // the dry-bank condition between slices, and the producer STOPS and
+    // JOINS it before writing the real chunk — so chunk audio and bridge
+    // silence never interleave in the FIFO (single-writer-at-a-time) and the
+    // dead air is bounded by one slice remainder (≤ 0.2 s).
 
     /** Silence bridged in the current dry spell — incident log ledger. */
     @Volatile
@@ -131,6 +148,22 @@ class StreamingPlaybackCore(
     /** True once an incident exceeded the safety cap — stop bridging this session. */
     @Volatile
     private var bridgeDisabled = false
+
+    /**
+     * The rolling bridge feeder of the CURRENT dry spell, if one is armed.
+     * Written on the generate queue (arm + stop); the feeder exits on its
+     * own when the generation guard fails, so stop() only flips the stop
+     * flag and never joins from main.
+     */
+    private var bridgeFeeder: Thread? = null
+
+    /**
+     * Co-operative stop flag of the CURRENT feeder — a FRESH flag per arm,
+     * so a late-exiting predecessor can never be revived by a new arm
+     * clearing a shared flag. Null = no feeder armed.
+     */
+    @Volatile
+    private var bridgeFeederStop: AtomicBoolean? = null
 
     // MARK: Session metrics for the chunk schedule (ChunkSchedule.State).
     // Written on the generate queue (inside schedule()), read on main when
@@ -403,7 +436,7 @@ class StreamingPlaybackCore(
                 val hadTrack = audioTrack != null
                 val bridged = bridgeIfDry(index, g)
                 val renderStartedAt = System.nanoTime()
-                val samples = runCatching { generateChunk(chunk.text) }
+                val generated = runCatching { generateChunk(chunk.text) }
                     .onFailure { LogStore.error("${config.logPrefix}: chunk $index failed: ${it.message}") }
                     .getOrNull()
                 // WALL seconds, not audio seconds: the prebuffer must cover
@@ -411,7 +444,16 @@ class StreamingPlaybackCore(
                 // bank mid-render and AudioFlinger disables the track.
                 val wallSeconds = (System.nanoTime() - renderStartedAt) / 1_000_000_000.0
                 lastChunkRenderSeconds = lastChunkRenderSeconds * 0.3 + wallSeconds * 0.7
+                // Boundary fades, AFTER the wall measurement so the RTF line
+                // stays inference-only — the end-of-chunk click fix (iOS
+                // cf501b2; see ChunkBoundaryFades).
+                val samples = generated?.let { ChunkBoundaryFades.apply(it, sampleRateHz.toDouble()) }
                 if (samples == null) BeepPlayer.softError()
+                // The feeder's silence must be fully out of its loop before
+                // the real chunk enters the FIFO — join it (iOS: the bridge
+                // stops when the chunk lands). The unconsumed slice
+                // remainder is the session's whole dead-air bound (≤ 0.2 s).
+                stopBridgeFeeder()
                 schedule(index, samples, g)
                 // The per-chunk timeline (ChunkTimeline): one line that makes
                 // any device run diagnose itself — RTF > 1 sustained means
@@ -627,17 +669,26 @@ class StreamingPlaybackCore(
      * the playback head has consumed everything written while chunk
      * [nextIndex] still awaits rendering. Runs on the generate queue, right
      * before the chunk's synthesis — the one moment the single-writer
-     * producer can feed the track before it goes busy rendering. Pre-writes
-     * ONE keepalive of silence sized to outlast the expected render
-     * (RenderAheadBankPolicy.bridgeSilenceSeconds); if the render still
-     * outruns it, the NEXT admission sees a dry bank again and bridges
-     * again. Never loops unbounded: an incident over 120 s of bridged
-     * silence disables the bridge for the session with an error log — a
-     * synthesis that dry for that long is dead, and the start-stall
-     * watchdog (R6) ends the session rather than silence looping forever.
+     * producer can feed the track before it goes busy rendering.
      *
-     * Returns true when keepalive silence was actually written this call —
-     * the per-chunk timeline's `bridge=on` fact.
+     * Arming starts the ROLLING FEEDER (iOS cf501b2's completion re-arms,
+     * translated — the divergence is only where the re-arm runs): a small
+     * thread writes [RenderAheadBankPolicy.BRIDGE_SLICE_SECONDS] silence
+     * slices while the bank is dry and the render is in flight, re-checking
+     * the dry condition between slices — the sink never drains (the
+     * frozen-head pathology stays fixed) while the dead air ahead of the
+     * chunk is bounded by one slice. The producer stops and joins the
+     * feeder before writing the chunk ([stopBridgeFeeder]), so silence and
+     * chunk audio never interleave in the FIFO. If the dry spell outlives
+     * the render (the next admission sees a dry bank again), a fresh
+     * feeder arms for that chunk. Never bridges unbounded: an incident
+     * over 120 s of bridged silence disables the bridge for the session
+     * with an error log — a synthesis that dry for that long is dead, and
+     * the start-stall watchdog (R6) ends the session rather than silence
+     * looping forever.
+     *
+     * Returns true when a feeder was actually armed this call — the
+     * per-chunk timeline's `bridge=on` fact.
      */
     private fun bridgeIfDry(nextIndex: Int, generationId: Int): Boolean {
         if (generationId != generation || !running.get() || paused.get()) return false
@@ -653,41 +704,113 @@ class StreamingPlaybackCore(
         }
         if (bridgeDisabled) return false
         val track = audioTrack ?: return false
-        val silenceSeconds = RenderAheadBankPolicy.bridgeSilenceSeconds(lastChunkRenderSeconds)
-        val frames = (silenceSeconds * sampleRateHz).toInt().coerceAtLeast(1)
+        // The previous admission's feeder should be dead (the producer
+        // joins it after every render); retire it defensively before
+        // arming a fresh one, so two feeders never write interleaved.
+        stopBridgeFeeder()
         if (bridgeIncidentSeconds == 0.0) {
             LogStore.info(
                 "${config.logPrefix} keepalive bridge — real queue ran dry before chunk $nextIndex " +
-                    "of ${chunks.size}, banked %.1fs; pre-writing %.1fs of silence so the track never idles"
-                        .format(banked, silenceSeconds)
+                    "of ${chunks.size}, banked %.1fs; feeding %.2fs silence slices so the track never idles"
+                        .format(banked, RenderAheadBankPolicy.BRIDGE_SLICE_SECONDS)
             )
         }
-        val silence = ShortArray(frames)
-        var offset = 0
-        while (offset < silence.size) {
-            val fit = track.write(silence, offset, silence.size - offset, android.media.AudioTrack.WRITE_NON_BLOCKING)
-            if (fit < 0) {
-                LogStore.error("${config.logPrefix}: bridge write failed ($fit)")
-                return false
-            }
-            if (fit == 0) {
-                // Buffer full with a DRY bank cannot happen (the head is at
-                // the write point); treat it as a wedged track and bail —
-                // the completion poller's revival path owns that case.
-                return false
-            }
-            offset += fit
-            totalFramesWritten += fit
-            bridgeIncidentSeconds += fit / sampleRateHz.toDouble()
-        }
-        if (bridgeIncidentSeconds > BRIDGE_CAP_SECONDS) {
-            bridgeDisabled = true
-            LogStore.error(
-                "${config.logPrefix}: keepalive bridge exceeded %.0fs this session — synthesis looks dead; disabling bridge (watchdog should end the session)"
-                    .format(BRIDGE_CAP_SECONDS)
-            )
-        }
+        // A fresh stop flag per arm: a late-exiting predecessor can never
+        // be revived by a new arm clearing a shared flag.
+        val stop = AtomicBoolean(false)
+        bridgeFeederStop = stop
+        val feeder = Thread(
+            { bridgeFeederBody(track, generationId, stop) },
+            "${config.logPrefix}-bridge",
+        )
+        bridgeFeeder = feeder
+        feeder.start()
         return true
+    }
+
+    /**
+     * The feeder loop: one [RenderAheadBankPolicy.BRIDGE_SLICE_SECONDS]
+     * silence slice per round while the bank is dry and the render is in
+     * flight. Runs OFF the generate queue — the producer is parked inside
+     * generateChunk for the loop's whole life, and AudioTrack writes are
+     * internally synchronised; the only contract is that the producer
+     * joins this thread before writing the chunk (no interleaved writes
+     * in the FIFO).
+     */
+    private fun bridgeFeederBody(
+        track: android.media.AudioTrack,
+        generationId: Int,
+        stop: AtomicBoolean,
+    ) {
+        val sliceFrames =
+            (RenderAheadBankPolicy.BRIDGE_SLICE_SECONDS * sampleRateHz).toInt().coerceAtLeast(1)
+        val silence = ShortArray(sliceFrames)
+        while (generation == generationId && running.get() && !paused.get() &&
+            !stop.get() && !bridgeDisabled
+        ) {
+            // Still covered? The head is chewing a slice we already wrote —
+            // re-arm only when it is nearly through (the dead-air bound).
+            if (bankedSeconds() >= RenderAheadBankPolicy.BRIDGE_SLICE_SECONDS) {
+                try { Thread.sleep(10) } catch (_: InterruptedException) { return }
+                continue
+            }
+            var offset = 0
+            while (offset < silence.size) {
+                val fit = try {
+                    track.write(
+                        silence,
+                        offset,
+                        silence.size - offset,
+                        android.media.AudioTrack.WRITE_NON_BLOCKING,
+                    )
+                } catch (_: IllegalStateException) {
+                    // Track released under us (stop() / sample-rate change).
+                    -1
+                }
+                if (fit < 0) {
+                    if (generation == generationId && running.get()) {
+                        LogStore.error("${config.logPrefix}: bridge write failed ($fit)")
+                    }
+                    return
+                }
+                if (fit == 0) {
+                    // Buffer full with a DRY bank cannot happen (the head is
+                    // at the write point); treat it as a wedged track and
+                    // bail — the completion poller's revival path owns that
+                    // case.
+                    return
+                }
+                offset += fit
+                totalFramesWritten += fit
+                bridgeIncidentSeconds += fit / sampleRateHz.toDouble()
+            }
+            if (bridgeIncidentSeconds > BRIDGE_CAP_SECONDS) {
+                bridgeDisabled = true
+                LogStore.error(
+                    "${config.logPrefix}: keepalive bridge exceeded %.0fs this session — synthesis looks dead; disabling bridge (watchdog should end the session)"
+                        .format(BRIDGE_CAP_SECONDS)
+                )
+                return
+            }
+        }
+    }
+
+    /**
+     * Stops the rolling feeder and waits for its in-flight slice to finish,
+     * so the chunk write that follows never interleaves with bridge silence
+     * in the FIFO. Generate-queue only (the join must not park main); the
+     * timeout is a wedge-guard — the loop re-checks its stop flag every
+     * slice round and its writes are non-blocking.
+     */
+    private fun stopBridgeFeeder() {
+        val stop = bridgeFeederStop
+        val feeder = bridgeFeeder
+        bridgeFeederStop = null
+        bridgeFeeder = null
+        stop?.set(true)
+        if (feeder != null && feeder !== Thread.currentThread()) {
+            runCatching { feeder.join(1_000) }
+        }
     }
 
     /** Safety cap on one session's total bridged silence, in seconds. */
@@ -890,6 +1013,13 @@ class StreamingPlaybackCore(
         generation++
         running.set(false)
         paused.set(false)
+        // Retire the bridge feeder — flip its stop flag and drop it. No
+        // join here (stop() runs on main); the feeder's generation guard
+        // makes it exit within one slice round, and its write catches the
+        // release that follows below.
+        bridgeFeederStop?.set(true)
+        bridgeFeederStop = null
+        bridgeFeeder = null
         // Wake the generate queue if it's parked on the pause-wait.
         audioTrack?.pause()
         audioTrack?.flush()
@@ -949,8 +1079,13 @@ class StreamingPlaybackCore(
                 var done = 0
                 for (chunk in utteranceChunks) {
                     val renderStartedAt = System.nanoTime()
-                    val samples = runCatching { generateChunk(chunk.text) }.getOrNull()
+                    val generated = runCatching { generateChunk(chunk.text) }.getOrNull()
                     val wallSeconds = (System.nanoTime() - renderStartedAt) / 1_000_000_000.0
+                    // Same boundary fades as playback, so an exported WAV
+                    // does not carry the click its live twin no longer has
+                    // (iOS cf501b2); applied after the wall measurement so
+                    // the export RTF stays inference-only.
+                    val samples = generated?.let { ChunkBoundaryFades.apply(it, sampleRateHz.toDouble()) }
                     if (samples != null) all.addAll(samples.toTypedArray())
                     for (i in 0 until silenceSamples) all.add(0f)
                     done++

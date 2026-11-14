@@ -287,13 +287,16 @@ class RenderAheadBankPolicyTest {
     }
 
     @Test
-    fun bridgeSilence_coversTheExpectedRender() {
-        // No render history yet (first bridge of a session): the margin
-        // floor applies — one full second for the HAL to chew.
-        assertEquals(1.0, RenderAheadBankPolicy.bridgeSilenceSeconds(0.0), 0.0)
-        // After a 3.4 s render, the silence must outlast a repeat of it:
-        // render + margin, or the track drains mid-render and AudioFlinger
-        // disables it — the pathology the bridge exists to prevent.
-        assertEquals(4.4, RenderAheadBankPolicy.bridgeSilenceSeconds(3.4), 1e-9)
+    fun bridgeSlice_isTheIos0_2SecondKeepalive() {
+        // iOS cf501b2 (the "Phonon chunk click+gap" fix) shortened the
+        // keepalive 0.5 s → 0.2 s: every slice of bridge silence enters the
+        // FIFO ahead of the chunk being rendered, so the slice length IS an
+        // added-latency cap on the next resume. The old Android bridge
+        // pre-wrote ONE buffer sized to outlast the expected render
+        // (last render + 1 s margin) — up to ~1 s of dead air after the
+        // chunk was already synthesized. The rolling feeder feeds 0.2 s
+        // slices instead; the sink never drains while the dead air is
+        // bounded by one slice.
+        assertEquals(0.2, RenderAheadBankPolicy.BRIDGE_SLICE_SECONDS, 0.0)
     }
 }

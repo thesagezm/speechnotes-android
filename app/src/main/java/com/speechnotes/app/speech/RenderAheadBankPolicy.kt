@@ -184,23 +184,23 @@ object RenderAheadBankPolicy {
         bankedSeconds < EXHAUSTION_THRESHOLD_SECONDS
 
     /**
-     * Margin added to the last chunk's measured WALL render time when sizing
-     * the never-run-dry keepalive (the silence bridge, iOS 241888e): the
-     * silence must outlast the render that follows it, or the track drains
-     * mid-render and AudioFlinger disables it — the frozen-head-at-0
-     * pathology.
+     * Seconds of keepalive silence per bridge slice (iOS cf501b2 — the
+     * "Phonon chunk click+gap" fix shortened the keepalive 0.5 s → 0.2 s).
+     *
+     * 0.2 s, not longer, because every slice of bridge silence is ADDED
+     * LATENCY: it enters the track's FIFO ahead of the chunk being
+     * rendered, and the listener waits out the unconsumed remainder before
+     * the next sentence sounds. The old Android bridge pre-wrote ONE buffer
+     * sized to outlast the expected render (last render + 1 s margin), so
+     * every dry-bank resume carried ~1 s of dead air after the chunk was
+     * already synthesized — the "slight delay before the next chunk
+     * resumes" report. The bridge now feeds ROLLING slices instead (the
+     * StreamingPlaybackCore feeder): the sink never drains (the frozen-head
+     * pathology stays fixed) while the dead air is bounded by one slice.
+     * 0.2 s still outlives the producer's wakeup plus a queue hop, and its
+     * re-arm check runs every 10 ms while the producer is still working.
      */
-    const val BRIDGE_MARGIN_SECONDS: Double = 1.0
-
-    /**
-     * Seconds of keepalive silence to pre-write before rendering the next
-     * chunk with a dry bank. At least the exhaustion threshold (something
-     * for the HAL to chew even with no render-time history — the first
-     * bridge of a session), otherwise the last chunk's measured render time
-     * plus the margin.
-     */
-    fun bridgeSilenceSeconds(lastChunkRenderSeconds: Double): Double =
-        maxOf(EXHAUSTION_THRESHOLD_SECONDS, lastChunkRenderSeconds + BRIDGE_MARGIN_SECONDS)
+    const val BRIDGE_SLICE_SECONDS: Double = 0.2
 
     /**
      * Whether the silence bridge should arm right now: the producer still
