@@ -68,6 +68,17 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
+0. **2026-11-15 — PDF READER LANDSCAPE (user): "Big GUI bug on mobile — in
+   landscape mode the viewing space for pdfs is severely reduced … the page
+   slider is not necessary there … that TOC should be in the same row as the
+   title not at the bottom … the previous and next buttons in that bottom bar
+   are already in the landscape rail … i dont want that bottom bar there in
+   landscape mode — all that space should be used to fit the pdf … see and
+   replicate exactly what speechnotes-ios does."** ADDRESSED as Unit PDF-L1
+   (see In Flight): the landscape bottom band is GONE (iOS round 6), the
+   page takes everything leading of the rail, Contents moved to the title
+   row, no prev/next duplication. Device pass pending (Waydroid container
+   down — the same root-restart blocker as GO1/EPUB-F1).
 0. **2026-11-14 — PHONON CLICK+GAP PORT (user): "There are some recent
    changes made to phonon on speechnotes-ios to improve sound quality
    reduce the click and gap... incorporate this".** The iOS change is ONE
@@ -250,6 +261,45 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-11-15 — Unit PDF-L1: the PDF reader's landscape = iOS round 6 —
+  CODE-COMPLETE (265/265 green, x86_64 APK built); DEVICE PASS PENDING.**
+  User feedback (see User Feedback Pending): landscape PDF viewing space
+  severely reduced by the bottom bar (slider + steppers + Contents) that
+  duplicates the rail. Ported iOS `BookPDFReaderView.readerLayout` round 6
+  verbatim in shape: **in landscape the bottom band is GONE** — iOS's own
+  comment: "the bottom page-number band is GONE in landscape — it covered
+  the page it named" — and the layout is the iOS `HStack { readerSurface;
+  railPlayerBar }`: `Row { Box(weight 1f) { pdfSurface() }; PlaybackRail }`.
+  One `pdfSurface` lambda (the pinch-zoom bitmap or spinner) is now the
+  single reader-surface identity shared by both orientation branches (iOS's
+  single `readerSurface`). Changes, per the user's five items: (1) landscape
+  page space = full height leading of the rail — no bottom bar, no pill
+  (the portrait `bookBarMinimized` pill never applies in landscape on iOS
+  either; the rail's own `landscapeRailMinimized` collapse is the landscape
+  minimizer and keeps its collapsibility); (2) the page slider is portrait-
+  only — landscape navigates by the rail's prev/next stepper and the
+  Contents sheet (iOS has no page slider anywhere; page turning is PDFKit's
+  scroll/swipe there); (3) **Contents moved to the TITLE ROW** — a TopAppBar
+  `actions` item for PDF (iOS `ToolbarItem(placement: .topBarTrailing)`
+  "Contents", both orientations), the `showOutline` flag hoisted into
+  `BookReaderScreen` and passed down; the bottom row's Contents button is
+  deleted; (4) no prev/next duplication — the bottom bar that carried the
+  duplicates does not exist in landscape; (5) the tautological `!landscape`
+  guards on the portrait bar's play/stop/minimize buttons are deleted (the
+  bar now only renders in the portrait branch). **Recorded divergences:**
+  the rail steps PAGES (iOS steps CHAPTERS because PDFKit's scroll/swipe
+  turns pages; Android renders single-page bitmaps with no swipe-turn
+  gesture, so the rail is the only page stepper in landscape), and the rail
+  shows for chapter-less PDFs too (iOS gates on `hasChapters` — Android's
+  rail is their only play affordance). Portrait layout is unchanged (slider
+  + steppers + play/stop/minimize + pill). **Evidence:** `testDebugUnitTest`
+  → **265/265** (pure UI diff — no logic touched), x86_64 debug APK built
+  (89 MB). Device pass pending: Waydroid container STOPPED and
+  `waydroid container start` needs the user's root password (verified this
+  session: "Action 'container' needs root access") — after it boots, open a
+  PDF in landscape: the page must fill the screen leading of the rail, no
+  bottom band, Contents in the title row (portrait too), rail
+  collapse/expand still works, portrait regression (slider + bar + pill).
 - **2026-11-14 — Unit GO1: the Phonon click+gap port (iOS `cf501b2`) —
   CODE-COMPLETE (265/265 green, x86_64 APK built); DEVICE PASS PENDING.**
   Two changes in the shared streaming core, one per iOS half:
@@ -785,6 +835,27 @@ commit, `git push` after verify, and NO machine identifiers in any file.
    page.
 
 ## Session Handover
+
+- **2026-11-15 HANDOVER (Unit PDF-L1 — PDF reader landscape = iOS round 6;
+  GO1 + EPUB-F1 device passes still pending).** PDF-L1 is code-complete,
+  265/265 green, x86_64 debug APK built (89 MB). **THREE device passes now
+  wait on the SAME blocked resource: the Waydroid container is STOPPED and
+  `waydroid container start` errors "needs root access" (re-verified this
+  session) — the user must restart it.** After it boots: `adb connect
+  $(waydroid status | awk '/IP address/{print $3}'):5555`, install the
+  current `app-x86_64-debug.apk` (push + `pm install -r`, md5 the installed
+  `base.apk` against your output first), then:
+  - **PDF-L1 (this unit):** open a PDF, rotate landscape — the page must
+    fill ALL the height leading of the rail (no bottom band, no slider, no
+    pill), the rail carries prev/next page stepping + voice + play + rate +
+    its own collapse, Contents lives in the TITLE ROW (top-right icon,
+    portrait as well), tapping it opens the outline sheet, and portrait
+    still has slider + steppers + play/stop/minimize + pill.
+  - **GO1:** Phonon play → logcat `keepalive bridge — … feeding 0.20s
+    silence slices`, gap between sentences ≤ 0.2 s; click is the user's
+    audible call on real hardware.
+  - **EPUB-F1:** First Aid EPUB — page fits screen width edge-to-edge,
+    wide tables pan inside the page, themes beat book body styles.
 
 - **2026-11-14 HANDOVER (Unit GO1 — Phonon click+gap port; EPUB-F1 device
   pass still pending).** GO1 is committed on main; the tree is green

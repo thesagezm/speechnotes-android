@@ -133,6 +133,12 @@ fun BookReaderScreen(vm: SpeechnotesViewModel, bookId: String, onBack: () -> Uni
         onDispose { vm.miniPlayerSuppressed = false }
     }
 
+    // The PDF Contents sheet opens from the TITLE ROW (iOS BookPDFReaderView
+    // toolbar parity — topBarTrailing "Contents" in both orientations), so
+    // the flag lives above the format dispatch and the PDF reader owns the
+    // sheet itself.
+    val showPdfContents = remember(book.id) { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -147,6 +153,19 @@ fun BookReaderScreen(vm: SpeechnotesViewModel, bookId: String, onBack: () -> Uni
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    // iOS carries the PDF's TOC in the navigation bar's
+                    // trailing slot — the same row as the title — because the
+                    // landscape bottom band is gone and portrait's chapter
+                    // bar has no room to spare. The EPUB/audiobook surfaces
+                    // keep their TOC in their own chrome (their iOS twins do
+                    // the same).
+                    if (book.format == Book.FORMAT_PDF) {
+                        IconButton(onClick = { showPdfContents.value = true }) {
+                            Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Contents")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -165,7 +184,7 @@ fun BookReaderScreen(vm: SpeechnotesViewModel, bookId: String, onBack: () -> Uni
                     com.speechnotes.app.ui.playback.KeepScreenOnSurface(
                         com.speechnotes.app.logic.ScreenAwakeSurface.PDF_READER,
                     )
-                    PdfReader(vm, book)
+                    PdfReader(vm, book, showPdfContents)
                 }
                 else -> {
                     com.speechnotes.app.ui.playback.KeepScreenOnSurface(
@@ -920,15 +939,24 @@ private fun SliderRow(
 
 @Composable
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
+private fun PdfReader(
+    vm: SpeechnotesViewModel,
+    book: Book,
+    // Hoisted into the reader wrapper: the Contents sheet opens from the
+    // title row's action (iOS toolbar parity), which lives above this screen.
+    showOutline: androidx.compose.runtime.MutableState<Boolean>,
+) {
     val context = LocalContext.current
     var pageCount by remember(book.id) { mutableStateOf(0) }
     var pageIndex by remember(book.id) { mutableStateOf((book.position - 1).coerceAtLeast(0)) }
     val playState by vm.player.state.collectAsState()
     val nowPlayingBookId by vm.player.nowPlayingBookId.collectAsState()
     val narratingThis = nowPlayingBookId == book.id && playState.isActive
-    // Landscape moves the transport to the trailing rail (iOS PlaybackRail);
-    // the bottom row keeps the page slider/stepper and reader chrome only.
+    // Landscape is the iOS round-6 layout: the bottom band is GONE — it
+    // covered the page it named — and the trailing rail is the one place
+    // playback and page stepping live (the rail's own
+    // landscapeRailMinimized collapse is the landscape minimizer; the
+    // portrait pill/bookBarMinimized never applies here on iOS either).
     val landscape = com.speechnotes.app.ui.playback.isLandscape()
     val playProgress by vm.player.progress.collectAsState()
     val playRate by vm.player.rateMultiplier.collectAsState()
@@ -990,8 +1018,8 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
 
     // Outline navigation (iOS BookPDFReaderView parity): the PDF's outline
     // tree with DEPTH (C4: collapsible subtrees), current entry highlighted,
-    // scroll-to-current, chapters fallback for outline-less documents.
-    var showOutline by remember(book.id) { mutableStateOf(false) }
+    // scroll-to-current, chapters fallback for outline-less documents. The
+    // open flag (`showOutline`) is hoisted — the title row's action opens it.
 
     // E1: reading-time tracking while the PDF reader is on screen.
     DisposableEffect(book.id) {
@@ -1063,171 +1091,198 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
         !hidden
     }
 
-    Row(Modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxSize().weight(1f)) {
-        Box(Modifier.weight(1f)) {
-            val transformState = androidx.compose.foundation.gestures.TransformableState { zoomChange, panChange, _ ->
-                zoom = (zoom * zoomChange).coerceIn(1f, 4f)
-                zoomOffset += panChange
-                // At 1× snap the pan home so the page always starts framed;
-                // above 1× the user pans freely.
-                if (zoom <= 1.01f) zoomOffset = Offset.Zero
-            }
+    // The page surface — ONE identity shared by both orientation branches
+    // (iOS's single readerSurface): the pinch-zoom/pan page bitmap, or the
+    // loading spinner until the first bitmap lands.
+    val pdfSurface: @Composable () -> Unit = {
+        val transformState = androidx.compose.foundation.gestures.TransformableState { zoomChange, panChange, _ ->
+            zoom = (zoom * zoomChange).coerceIn(1f, 4f)
+            zoomOffset += panChange
+            // At 1× snap the pan home so the page always starts framed;
+            // above 1× the user pans freely.
+            if (zoom <= 1.01f) zoomOffset = Offset.Zero
+        }
 
-            bitmaps[pageIndex]?.let { bitmap ->
-                androidx.compose.foundation.Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "Page ${pageIndex + 1}",
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(pageIndex) {
-                            detectTapGestures(onDoubleTap = {
-                                zoom = 1f
-                                zoomOffset = Offset.Zero
-                            })
-                        }
-                        .transformable(transformState)
-                        .graphicsLayer(
-                            scaleX = zoom,
-                            scaleY = zoom,
-                            translationX = zoomOffset.x,
-                            translationY = zoomOffset.y,
-                        ),
-                )
-            } ?: Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                androidx.compose.material3.CircularProgressIndicator()
-            }
-        }
-        // Two rows on purpose. Everything shared one row before — contents,
-        // prev, page label, a weighted Slider, play, next — and at 360 dp the
-        // fixed 48 dp icon buttons plus the label left the Slider at its own
-        // minimum, so the LAST children (play, next-page) were measured off
-        // the right edge and never drawn. That is why page turning was only
-        // reachable through the slider.
-        //
-        // Collapsed (iOS bookBarMinimized): the page bar goes away and the
-        // slim pill takes over — its steppers are the page steppers, so page
-        // turning stays one tap away while the page gets the space back.
-        if (barMinimized.value) {
-            com.speechnotes.app.ui.playback.MinimizedPlaybackPill(
-                isPlaying = narratingThis && playState == SpeechState.SPEAKING,
-                isGenerating = narratingThis && playState == SpeechState.GENERATING,
-                isPlayEnabled = true,
-                progressText = compactProgressLabel(playProgress, narratingThis && playState == SpeechState.GENERATING),
-                onTogglePlay = {
-                    if (narratingThis) vm.player.toggle()
-                    else {
-                        val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
-                        vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
-                    }
-                },
-                onExpand = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, false) },
-                onStepBack = { if (pageIndex > 0) pageIndex-- },
-                onStepForward = { if (pageIndex < pageCount - 1) pageIndex++ },
-                stepBackEnabled = pageIndex > 0,
-                stepForwardEnabled = pageCount > 0 && pageIndex < pageCount - 1,
-            )
-        } else {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceContainerLow),
-        ) {
-            Slider(
-                value = if (pageCount > 1) pageIndex.toFloat() / (pageCount - 1) else 0f,
-                onValueChange = {
-                    pageIndex = (it * (pageCount - 1).coerceAtLeast(0)).toInt()
-                        .coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-                },
+        bitmaps[pageIndex]?.let { bitmap ->
+            androidx.compose.foundation.Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "Page ${pageIndex + 1}",
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
+                    .fillMaxSize()
+                    .pointerInput(pageIndex) {
+                        detectTapGestures(onDoubleTap = {
+                            zoom = 1f
+                            zoomOffset = Offset.Zero
+                        })
+                    }
+                    .transformable(transformState)
+                    .graphicsLayer(
+                        scaleX = zoom,
+                        scaleY = zoom,
+                        translationX = zoomOffset.x,
+                        translationY = zoomOffset.y,
+                    ),
             )
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = { showOutline = true }, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Contents", modifier = Modifier.size(20.dp))
-                }
-                FilledTonalIconButton(
-                    onClick = { if (pageIndex > 0) pageIndex-- },
-                    enabled = pageIndex > 0,
-                    modifier = Modifier.size(40.dp),
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous page", modifier = Modifier.size(20.dp))
-                }
-                Text(
-                    "Page ${pageIndex + 1} of $pageCount",
-                    style = MaterialTheme.typography.labelLarge,
-                    textAlign = TextAlign.Center,
-                    // Weighted, not min-width: a fixed 104dp label plus six
-                    // 48dp buttons overflowed 360dp screens when the Stop
-                    // button joined during narration and pushed it (and the
-                    // next buttons) off the right edge.
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 4.dp),
-                )
-                FilledTonalIconButton(
-                    onClick = { if (pageIndex < pageCount - 1) pageIndex++ },
-                    enabled = pageIndex < pageCount - 1,
-                    modifier = Modifier.size(40.dp),
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next page", modifier = Modifier.size(20.dp))
-                }
-                if (!landscape) FilledIconButton(onClick = {
-                    // Pause/resume the ongoing narration; start the chain for
-                    // the chapter containing the CURRENT page — the text pick
-                    // is pinned to that page (SpeechPlayer honors the offset),
-                    // not to wherever the chapter's bookmark last landed.
-                    if (narratingThis) vm.player.toggle()
-                    else {
-                        val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
-                        vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
-                    }
-                }, modifier = Modifier.size(40.dp)) {
-                    Icon(
-                        when {
-                            narratingThis && playState == SpeechState.SPEAKING -> Icons.Default.Pause
-                            narratingThis -> Icons.Default.Stop
-                            else -> Icons.Default.PlayArrow
+        } ?: Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            androidx.compose.material3.CircularProgressIndicator()
+        }
+    }
+
+    Row(Modifier.fillMaxSize()) {
+        if (landscape) {
+            // iOS BookPDFReaderView round 6: "the bottom page-number band is
+            // GONE in landscape — it covered the page it named." The page
+            // takes every dp leading of the rail; playback and page stepping
+            // ride the rail, the title row carries Contents, and the rail's
+            // own landscapeRailMinimized collapse is the landscape minimizer
+            // — the portrait bookBarMinimized pill never applies in this
+            // orientation on iOS either.
+            //
+            // Recorded divergences: the rail steps PAGES here (iOS's stepper
+            // steps chapters because PDFKit's own scroll/swipe turns pages;
+            // Android renders single-page bitmaps with no swipe-turn
+            // gesture, so this rail is the only page stepper in landscape),
+            // and it shows for chapter-less PDFs too (iOS gates the branch
+            // on hasChapters) — it is their only play affordance.
+            Box(Modifier.weight(1f)) { pdfSurface() }
+        } else {
+            Column(Modifier.fillMaxSize().weight(1f)) {
+                Box(Modifier.weight(1f)) { pdfSurface() }
+                // Two rows on purpose. Everything shared one row before —
+                // prev, page label, a weighted Slider, play, next — and at
+                // 360 dp the fixed 48 dp icon buttons plus the label left
+                // the Slider at its own minimum, so the LAST children (play,
+                // next-page) were measured off the right edge and never
+                // drawn. That is why page turning was only reachable through
+                // the slider. (Contents moved to the title row — iOS toolbar
+                // parity — so the row is one button lighter everywhere.)
+                //
+                // Collapsed (iOS bookBarMinimized): the page bar goes away
+                // and the slim pill takes over — its steppers are the page
+                // steppers, so page turning stays one tap away while the
+                // page gets the space back. PORTRAIT ONLY: in landscape this
+                // whole band is gone (iOS round 6) and the rail owns the
+                // collapse.
+                if (barMinimized.value) {
+                    com.speechnotes.app.ui.playback.MinimizedPlaybackPill(
+                        isPlaying = narratingThis && playState == SpeechState.SPEAKING,
+                        isGenerating = narratingThis && playState == SpeechState.GENERATING,
+                        isPlayEnabled = true,
+                        progressText = compactProgressLabel(playProgress, narratingThis && playState == SpeechState.GENERATING),
+                        onTogglePlay = {
+                            if (narratingThis) vm.player.toggle()
+                            else {
+                                val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
+                                vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
+                            }
                         },
-                        contentDescription = when {
-                            narratingThis && playState == SpeechState.SPEAKING -> "Pause narration"
-                            narratingThis -> "Cancel narration"
-                            else -> "Listen from this page"
-                        },
-                        modifier = Modifier.size(20.dp),
+                        onExpand = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, false) },
+                        onStepBack = { if (pageIndex > 0) pageIndex-- },
+                        onStepForward = { if (pageIndex < pageCount - 1) pageIndex++ },
+                        stepBackEnabled = pageIndex > 0,
+                        stepForwardEnabled = pageCount > 0 && pageIndex < pageCount - 1,
                     )
-                }
-                // The thin in-button spinner was near-invisible on device; the
-                // Stop glyph during GENERATING (tap = cancel) reads clearly.
-                if (narratingThis && playState != SpeechState.GENERATING && !landscape) {
-                    IconButton(onClick = { vm.player.stop() }, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Default.Stop, contentDescription = "Stop narration", modifier = Modifier.size(20.dp))
-                    }
-                }
-                // Collapse the transport to the slim pill — iOS
-                // BookPlayerBar's chevron.down (bookBarMinimized). Portrait
-                // only: in landscape the trailing rail owns the collapse.
-                if (!landscape) {
-                    IconButton(
-                        onClick = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, true) },
-                        modifier = Modifier.size(40.dp),
+                } else {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow),
                     ) {
-                        Icon(
-                            Icons.Default.KeyboardArrowDown,
-                            contentDescription = "Minimize playback controls",
-                            modifier = Modifier.size(20.dp),
+                        Slider(
+                            value = if (pageCount > 1) pageIndex.toFloat() / (pageCount - 1) else 0f,
+                            onValueChange = {
+                                pageIndex = (it * (pageCount - 1).coerceAtLeast(0)).toInt()
+                                    .coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
                         )
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            FilledTonalIconButton(
+                                onClick = { if (pageIndex > 0) pageIndex-- },
+                                enabled = pageIndex > 0,
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous page", modifier = Modifier.size(20.dp))
+                            }
+                            Text(
+                                "Page ${pageIndex + 1} of $pageCount",
+                                style = MaterialTheme.typography.labelLarge,
+                                textAlign = TextAlign.Center,
+                                // Weighted, not min-width: a fixed 104dp label
+                                // plus six 48dp buttons overflowed 360dp
+                                // screens when the Stop button joined during
+                                // narration and pushed it (and the next
+                                // buttons) off the right edge.
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 4.dp),
+                            )
+                            FilledTonalIconButton(
+                                onClick = { if (pageIndex < pageCount - 1) pageIndex++ },
+                                enabled = pageIndex < pageCount - 1,
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next page", modifier = Modifier.size(20.dp))
+                            }
+                            // Pause/resume the ongoing narration; start the
+                            // chain for the chapter containing the CURRENT
+                            // page — the text pick is pinned to that page
+                            // (SpeechPlayer honors the offset), not to
+                            // wherever the chapter's bookmark last landed.
+                            FilledIconButton(onClick = {
+                                if (narratingThis) vm.player.toggle()
+                                else {
+                                    val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
+                                    vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
+                                }
+                            }, modifier = Modifier.size(40.dp)) {
+                                Icon(
+                                    when {
+                                        narratingThis && playState == SpeechState.SPEAKING -> Icons.Default.Pause
+                                        narratingThis -> Icons.Default.Stop
+                                        else -> Icons.Default.PlayArrow
+                                    },
+                                    contentDescription = when {
+                                        narratingThis && playState == SpeechState.SPEAKING -> "Pause narration"
+                                        narratingThis -> "Cancel narration"
+                                        else -> "Listen from this page"
+                                    },
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                            // The thin in-button spinner was near-invisible
+                            // on device; the Stop glyph during GENERATING
+                            // (tap = cancel) reads clearly.
+                            if (narratingThis && playState != SpeechState.GENERATING) {
+                                IconButton(onClick = { vm.player.stop() }, modifier = Modifier.size(40.dp)) {
+                                    Icon(Icons.Default.Stop, contentDescription = "Stop narration", modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            // Collapse the transport to the slim pill — iOS
+                            // BookPlayerBar's chevron.down
+                            // (bookBarMinimized). Portrait only: in landscape
+                            // the trailing rail owns the collapse.
+                            IconButton(
+                                onClick = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, true) },
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Minimize playback controls",
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
                     }
                 }
             }
-        }
-        }
         }
         if (landscape) {
             com.speechnotes.app.ui.playback.PlaybackRail(
@@ -1257,14 +1312,14 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
                 onRateChange = { vm.player.setRateMultiplier(it) },
             )
         }
-        }
+    }
 
     if (showVoicePickerPdf) {
         com.speechnotes.app.ui.voice.VoicePickerSheet(vm = vm, onDismiss = { showVoicePickerPdf = false })
     }
 
-    if (showOutline) {
-        ModalBottomSheet(onDismissRequest = { showOutline = false }) {
+    if (showOutline.value) {
+        ModalBottomSheet(onDismissRequest = { showOutline.value = false }) {
             Text(
                 "Contents",
                 style = MaterialTheme.typography.titleLarge,
@@ -1304,7 +1359,7 @@ private fun PdfReader(vm: SpeechnotesViewModel, book: Book) {
                         modifier = Modifier.clickable {
                             pageIndex = page
                             vm.saveBookPosition(book.id, page + 1, 0.0, null)
-                            showOutline = false
+                            showOutline.value = false
                             // R3 (iOS 583acdb): a Contents jump during
                             // read-along MOVES the speech to the jumped-to
                             // spot, not just the view.
