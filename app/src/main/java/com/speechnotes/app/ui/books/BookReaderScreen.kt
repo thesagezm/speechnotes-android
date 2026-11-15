@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -80,6 +81,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -87,6 +89,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -100,7 +103,11 @@ import com.speechnotes.app.data.SpeechnotesViewModel
 import com.speechnotes.app.logic.AppFiles
 import com.speechnotes.app.model.Book
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
+
+/** Scroll mode's bitmap cache cap — pages kept rendered around the window. */
+private const val PDF_SCROLL_BITMAP_CAP = 8
 
 /**
  * The book reading surfaces, one per format (mirrors the iOS BookWebView /
@@ -992,8 +999,54 @@ private fun PdfReader(
         pageCount = withContext(Dispatchers.IO) { doc.numberOfPages }
     }
 
-    // Render the visible page (plus one ahead) off the main thread.
-    LaunchedEffect(pageIndex, pageCount) {        val doc = pdf ?: return@LaunchedEffect
+    // Scroll mode (user request 2026-11-15). iOS's PDFView is ALWAYS
+    // singlePageContinuous — continuous scroll is its only reading mode — so
+    // scroll is the DEFAULT here too, and the switch restores the old
+    // one-page-at-a-time reader (the only one that carries pinch-zoom, which
+    // a LazyColumn of pages cannot host). Global pref "pdfScrollMode"
+    // (Android-only key: iOS has no toggle, so there is nothing to share).
+    val scrollMode = remember {
+        mutableStateOf(
+            vm.context.getSharedPreferences("speechnotes", android.content.Context.MODE_PRIVATE)
+                .getBoolean("pdfScrollMode", true)
+        )
+    }
+    fun setScrollMode(on: Boolean) {
+        scrollMode.value = on
+        vm.context.getSharedPreferences("speechnotes", android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean("pdfScrollMode", on).apply()
+    }
+
+    // Scroll-mode plumbing: the list state, the surface width the width-fit
+    // render scale derives from, and a one-shot jump channel. The slider,
+    // steppers and Contents all land in jumpRequest so a jump scrolls the
+    // column; the scroll TRACKER below writes pageIndex without a jump —
+    // otherwise the reader would chase its own tail.
+    val listState = rememberLazyListState()
+    var surfaceWidthPx by remember { mutableStateOf(0) }
+    var jumpRequest by remember { mutableStateOf<Int?>(null) }
+
+    fun stepPage(delta: Int) {
+        val target = (pageIndex + delta).coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        if (target != pageIndex) {
+            pageIndex = target
+            jumpRequest = target
+        }
+    }
+
+    fun scrollToPage(page: Int) {
+        val target = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        pageIndex = target
+        jumpRequest = target
+    }
+
+    // Render the visible page (plus one ahead) off the main thread —
+    // SINGLE-PAGE MODE ONLY: in scroll mode the window renderer below owns
+    // the bitmap cache (two writers with different scales would fight, and
+    // position saving there happens in the scroll tracker).
+    LaunchedEffect(pageIndex, pageCount, scrollMode) {
+        if (scrollMode.value) return@LaunchedEffect
+        val doc = pdf ?: return@LaunchedEffect
         for (page in listOf(pageIndex, pageIndex + 1)) {
             if (page !in bitmaps && page in 0 until pageCount) {
                 val bitmap = withContext(Dispatchers.IO) {
@@ -1014,6 +1067,79 @@ private fun PdfReader(
             }
         }
         vm.saveBookPosition(book.id, pageIndex + 1, 0.0, null)
+    }
+
+    // Scroll mode — three coroutines, all no-ops unless scrollMode:
+    // (1) INITIAL POSITION: when the page count lands (or the mode switches
+    //     on), open the column at the saved/current page.
+    // (2) the WIDTH-FIT WINDOW RENDERER: pages around the visible window,
+    //     rendered off main at the surface width, LRU-capped — the cap is
+    //     what keeps a 400-page scan from allocating its whole page tree as
+    //     bitmaps.
+    // (3) the PAGE TRACKER: the page whose bounds cross the viewport center
+    //     is the reader's pageIndex — the rail stepper label, the portrait
+    //     slider and the narration start all follow the scroll, and the
+    //     position persists as it moves (iOS PDFViewPageChanged parity).
+    LaunchedEffect(scrollMode, pageCount) {
+        if (!scrollMode.value || pageCount <= 0) return@LaunchedEffect
+        listState.scrollToItem(pageIndex.coerceIn(0, pageCount - 1))
+    }
+    LaunchedEffect(pdf, scrollMode, surfaceWidthPx) {
+        if (!scrollMode.value) return@LaunchedEffect
+        val doc = pdf ?: return@LaunchedEffect
+        snapshotFlow {
+            val items = listState.layoutInfo.visibleItemsInfo
+            (items.firstOrNull()?.index ?: 0) to (items.lastOrNull()?.index ?: 0)
+        }.collectLatest { (first, last) ->
+            for (page in (first - 1)..(last + 1)) {
+                if (page < 0 || page >= pageCount || bitmaps.containsKey(page)) continue
+                val scale = (surfaceWidthPx / 612f).coerceIn(1f, 2.2f)
+                val bitmap = withContext(Dispatchers.IO) {
+                    runCatching {
+                        com.tom_roush.pdfbox.rendering.PDFRenderer(doc).renderImage(page, scale)
+                    }.getOrNull()
+                } ?: continue
+                bitmaps[page] = bitmap
+                // Evict the farthest-from-window pages first; recycling a
+                // page still in the window would hit a composed Image.
+                while (bitmaps.size > PDF_SCROLL_BITMAP_CAP) {
+                    val pivot = (first + last) / 2
+                    val victim = bitmaps.keys
+                        .filter { it < first - 2 || it > last + 2 }
+                        .maxByOrNull { kotlin.math.abs(it - pivot) }
+                        ?: break
+                    bitmaps.remove(victim)?.recycle()
+                }
+            }
+        }
+    }
+    LaunchedEffect(scrollMode, pageCount) {
+        if (!scrollMode.value || pageCount <= 0) return@LaunchedEffect
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val items = info.visibleItemsInfo
+            if (items.isEmpty()) -1
+            else {
+                val center = info.viewportStartOffset + info.viewportSize.height / 2
+                items.firstOrNull { center >= it.offset && center < it.offset + it.size }?.index
+                    ?: items.first().index
+            }
+        }.collect { page ->
+            if (page >= 0 && page < pageCount && page != pageIndex) {
+                pageIndex = page
+                vm.saveBookPosition(book.id, page + 1, 0.0, null)
+            }
+        }
+    }
+    // One-shot jumps (slider drags, steppers, Contents rows): land the
+    // column on the requested page. Instant, not animated — iOS PDFKit's
+    // go(to:) is instant too, and a slider drag re-fires this per tick.
+    LaunchedEffect(jumpRequest) {
+        val target = jumpRequest ?: return@LaunchedEffect
+        if (scrollMode.value && pageCount > 0) {
+            listState.scrollToItem(target.coerceIn(0, pageCount - 1))
+        }
+        jumpRequest = null
     }
 
     // Outline navigation (iOS BookPDFReaderView parity): the PDF's outline
@@ -1092,39 +1218,80 @@ private fun PdfReader(
     }
 
     // The page surface — ONE identity shared by both orientation branches
-    // (iOS's single readerSurface): the pinch-zoom/pan page bitmap, or the
-    // loading spinner until the first bitmap lands.
+    // (iOS's single readerSurface). In scroll mode a LazyColumn of width-fit
+    // pages — the iOS PDFView singlePageContinuous twin (BookPDFReaderView
+    // pins .singlePageContinuous); otherwise the pinch-zoom/pan single page,
+    // or the loading spinner until the first bitmap lands.
     val pdfSurface: @Composable () -> Unit = {
-        val transformState = androidx.compose.foundation.gestures.TransformableState { zoomChange, panChange, _ ->
-            zoom = (zoom * zoomChange).coerceIn(1f, 4f)
-            zoomOffset += panChange
-            // At 1× snap the pan home so the page always starts framed;
-            // above 1× the user pans freely.
-            if (zoom <= 1.01f) zoomOffset = Offset.Zero
-        }
-
-        bitmaps[pageIndex]?.let { bitmap ->
-            androidx.compose.foundation.Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "Page ${pageIndex + 1}",
+        if (scrollMode.value && pageCount > 0) {
+            LazyColumn(
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(pageIndex) {
-                        detectTapGestures(onDoubleTap = {
-                            zoom = 1f
-                            zoomOffset = Offset.Zero
-                        })
+                    .onSizeChanged { surfaceWidthPx = it.width },
+            ) {
+                items(count = pageCount, key = { it }) { index ->
+                    val bmp = bitmaps[index]
+                    if (bmp != null) {
+                        androidx.compose.foundation.Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "Page ${index + 1}",
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        // Placeholder at the common page aspect until the
+                        // render lands — every item reserves its height up
+                        // front so the scroll position never jumps as
+                        // bitmaps arrive.
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(612f / 792f)
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "${index + 1}",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
-                    .transformable(transformState)
-                    .graphicsLayer(
-                        scaleX = zoom,
-                        scaleY = zoom,
-                        translationX = zoomOffset.x,
-                        translationY = zoomOffset.y,
-                    ),
-            )
-        } ?: Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            androidx.compose.material3.CircularProgressIndicator()
+                }
+            }
+        } else {
+            val transformState = androidx.compose.foundation.gestures.TransformableState { zoomChange, panChange, _ ->
+                zoom = (zoom * zoomChange).coerceIn(1f, 4f)
+                zoomOffset += panChange
+                // At 1× snap the pan home so the page always starts framed;
+                // above 1× the user pans freely.
+                if (zoom <= 1.01f) zoomOffset = Offset.Zero
+            }
+
+            bitmaps[pageIndex]?.let { bitmap ->
+                androidx.compose.foundation.Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "Page ${pageIndex + 1}",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(pageIndex) {
+                            detectTapGestures(onDoubleTap = {
+                                zoom = 1f
+                                zoomOffset = Offset.Zero
+                            })
+                        }
+                        .transformable(transformState)
+                        .graphicsLayer(
+                            scaleX = zoom,
+                            scaleY = zoom,
+                            translationX = zoomOffset.x,
+                            translationY = zoomOffset.y,
+                        ),
+                )
+            } ?: Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                androidx.compose.material3.CircularProgressIndicator()
+            }
         }
     }
 
@@ -1177,8 +1344,8 @@ private fun PdfReader(
                             }
                         },
                         onExpand = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, false) },
-                        onStepBack = { if (pageIndex > 0) pageIndex-- },
-                        onStepForward = { if (pageIndex < pageCount - 1) pageIndex++ },
+                        onStepBack = { stepPage(-1) },
+                        onStepForward = { stepPage(1) },
                         stepBackEnabled = pageIndex > 0,
                         stepForwardEnabled = pageCount > 0 && pageIndex < pageCount - 1,
                     )
@@ -1191,8 +1358,7 @@ private fun PdfReader(
                         Slider(
                             value = if (pageCount > 1) pageIndex.toFloat() / (pageCount - 1) else 0f,
                             onValueChange = {
-                                pageIndex = (it * (pageCount - 1).coerceAtLeast(0)).toInt()
-                                    .coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                                scrollToPage((it * (pageCount - 1).coerceAtLeast(0)).toInt())
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1205,7 +1371,7 @@ private fun PdfReader(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             FilledTonalIconButton(
-                                onClick = { if (pageIndex > 0) pageIndex-- },
+                                onClick = { stepPage(-1) },
                                 enabled = pageIndex > 0,
                                 modifier = Modifier.size(40.dp),
                             ) {
@@ -1225,7 +1391,7 @@ private fun PdfReader(
                                     .padding(horizontal = 4.dp),
                             )
                             FilledTonalIconButton(
-                                onClick = { if (pageIndex < pageCount - 1) pageIndex++ },
+                                onClick = { stepPage(1) },
                                 enabled = pageIndex < pageCount - 1,
                                 modifier = Modifier.size(40.dp),
                             ) {
@@ -1304,8 +1470,8 @@ private fun PdfReader(
                 voiceLabel = vm.player.currentVoiceDescription,
                 onChangeVoice = { showVoicePickerPdf = true },
                 stepLabel = "Page ${pageIndex + 1}/$pageCount",
-                onStepBack = { if (pageIndex > 0) pageIndex-- },
-                onStepForward = { if (pageIndex < pageCount - 1) pageIndex++ },
+                onStepBack = { stepPage(-1) },
+                onStepForward = { stepPage(1) },
                 stepBackEnabled = pageIndex > 0,
                 stepForwardEnabled = pageIndex < pageCount - 1,
                 rate = playRate,
@@ -1357,7 +1523,7 @@ private fun PdfReader(
                         },
                         supportingContent = { Text("Page ${page + 1}") },
                         modifier = Modifier.clickable {
-                            pageIndex = page
+                            scrollToPage(page)
                             vm.saveBookPosition(book.id, page + 1, 0.0, null)
                             showOutline.value = false
                             // R3 (iOS 583acdb): a Contents jump during
@@ -1371,6 +1537,23 @@ private fun PdfReader(
                     )
                 }
             }
+            // Reading mode (user request 2026-11-15): scroll is the DEFAULT —
+            // iOS's PDFView is .singlePageContinuous always, so continuous
+            // scroll is its only native mode — and the switch restores the
+            // one-page reader (the one that carries pinch-zoom).
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            ListItem(
+                headlineContent = { Text("Continuous scroll") },
+                supportingContent = {
+                    Text(
+                        "Pages flow in one column — the iOS reader's native mode. " +
+                            "Off: one page at a time, with pinch-zoom."
+                    )
+                },
+                trailingContent = {
+                    Switch(checked = scrollMode.value, onCheckedChange = { setScrollMode(it) })
+                },
+            )
             // R5: the per-book Force-OCR toggle (iOS Book.forceOCR) lives in
             // the PDF Contents sheet — the one surface where it is readable
             // next to the page map it changes. Flipping it invalidates the

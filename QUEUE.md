@@ -261,6 +261,42 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-11-15 — Unit PDF-L2: SCROLL MODE for the PDF reader —
+  CODE-COMPLETE (265/265 green, x86_64 APK built); DEVICE PASS PENDING.**
+  User request: "add scroll mode to speechnotes-android for pdf files". iOS
+  reference: BookPDFReaderView pins `pdfView.displayMode =
+  .singlePageContinuous` — continuous scroll is iOS's ONLY mode — so scroll
+  ships as the DEFAULT, and the old one-page reader stays behind a switch
+  (it is the only one that can host pinch-zoom, which a LazyColumn of pages
+  cannot). Implementation: `pdfSurface` now branches — scroll mode is a
+  LazyColumn of width-fit page items (8dp gaps), placeholders at the common
+  page aspect so the scroll position never jumps as bitmaps arrive; a
+  width-fit WINDOW RENDERER renders visible ±1 pages off-main at the surface
+  width (onSizeChanged) into the shared `bitmaps` map with an LRU cap
+  (PDF_SCROLL_BITMAP_CAP 8, farthest-from-window evicted + recycled); a PAGE
+  TRACKER derives pageIndex from the item whose bounds cross the viewport
+  center (iOS PDFViewPageChanged parity) and persists the position as it
+  moves; an INITIAL-POSITION effect opens the column at the saved page when
+  the count lands or the mode switches on; a one-shot jumpRequest channel
+  carries slider/stepper/Contents jumps to scrollToItem (instant — iOS
+  go(to:) semantics; the tracker writes pageIndex WITHOUT a jump so the
+  reader never chases its own tail). All existing navigation now goes
+  through `stepPage`/`scrollToPage` locals (slider, portrait bar chevrons,
+  pill steppers, rail steppers, Contents rows) — they work in BOTH modes
+  (single-page ignores the jump; the bitmap is just shown). The single-page
+  render effect is gated `!scrollMode` and re-keyed on it. Toggle: a
+  "Continuous scroll" row (Switch) in the Contents sheet, above Force-OCR;
+  global pref `pdfScrollMode` default TRUE (Android-only key — iOS has no
+  toggle, nothing to share; recorded divergence: no pinch-zoom in scroll
+  mode — feasible follow-up if wanted). Landscape (PDF-L1) is untouched:
+  the rail + no-bottom-band layout works identically over the scrolling
+  column, and the rail's "Page X/Y" stepper tracks the scroll live.
+  **Evidence:** testDebugUnitTest → **265/265**, x86_64 debug APK built
+  (89 MB). Device pass pending (Waydroid container still STOPPED, root
+  restart still the blocker): open a PDF → pages flow in one column,
+  scroll updates the rail stepper label + persists position, stepper/
+  slider/Contents land the column, Contents sheet switch flips to
+  one-page mode with pinch-zoom intact, landscape = page column + rail.
 - **2026-11-15 — Unit PDF-L1: the PDF reader's landscape = iOS round 6 —
   CODE-COMPLETE (265/265 green, x86_64 APK built); DEVICE PASS PENDING.**
   User feedback (see User Feedback Pending): landscape PDF viewing space
@@ -836,16 +872,22 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Session Handover
 
-- **2026-11-15 HANDOVER (Unit PDF-L1 — PDF reader landscape = iOS round 6;
-  GO1 + EPUB-F1 device passes still pending).** PDF-L1 is code-complete,
-  265/265 green, x86_64 debug APK built (89 MB). **THREE device passes now
-  wait on the SAME blocked resource: the Waydroid container is STOPPED and
-  `waydroid container start` errors "needs root access" (re-verified this
-  session) — the user must restart it.** After it boots: `adb connect
+- **2026-11-15 HANDOVER (Unit PDF-L2 — scroll mode; PDF-L1, GO1 + EPUB-F1
+  device passes still pending).** PDF-L2 is code-complete, 265/265 green,
+  x86_64 debug APK built (89 MB). **ALL FOUR device passes wait on the SAME
+  blocked resource: the Waydroid container is STOPPED and `waydroid
+  container start` errors "needs root access" (re-verified this session) —
+  the user must restart it.** After it boots: `adb connect
   $(waydroid status | awk '/IP address/{print $3}'):5555`, install the
   current `app-x86_64-debug.apk` (push + `pm install -r`, md5 the installed
   `base.apk` against your output first), then:
-  - **PDF-L1 (this unit):** open a PDF, rotate landscape — the page must
+  - **PDF-L2 (this unit):** open a PDF — pages flow in one continuous
+    column (scroll is the DEFAULT; the Contents sheet's "Continuous scroll"
+    switch restores one-page mode with pinch-zoom); scroll updates the rail/
+    bar "Page X/Y" labels and persists the position; steppers/slider/
+    Contents land the column on the page; landscape = scrolling column +
+    rail, no bottom band (PDF-L1 unchanged).
+  - **PDF-L1:** open a PDF, rotate landscape — the page must
     fill ALL the height leading of the rail (no bottom band, no slider, no
     pill), the rail carries prev/next page stepping + voice + play + rate +
     its own collapse, Contents lives in the TITLE ROW (top-right icon,
