@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+  <description>
+    <title-info>
+      <author><first-name>Ada</first-name><last-name>Teller</last-name></author>
+      <book-title>The Signal Lamp</book-title>
+    </title-info>
+  </description>
+  <body>
+    <section>
+      <title><p>One: The Tower</p></title>
+      <p>The keeper climbed the spiral stair with the lamp's new wick in his pocket, counting the steps as his father had counted them.</p>
+      <p>At the top the wind took his cap and gave it to the sea.</p>
+    </section>
+    <section>
+      <title><p>Two: The Ship</p></title>
+      <p>The brig answered the light at half past nine, heels deep in a running sea, and the keeper logged her name in a hand that shook from the climb.</p>
+    </section>
+    <empty-line/>
+  </body>
+</FictionBook>
