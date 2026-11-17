@@ -1,5 +1,6 @@
 package com.speechnotes.app.logic
 
+import java.io.ByteArrayOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail

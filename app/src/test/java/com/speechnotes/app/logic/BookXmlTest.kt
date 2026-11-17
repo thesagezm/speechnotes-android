@@ -92,10 +92,13 @@ class BookXmlTest {
     @Test
     fun scriptBodiesAreOneRawEvent() {
         val ev = events("<a><script>if (a<b) x();</script><p>ok</p></a>")
-        // Start a, Raw, Start p, Text ok, End p, End a
-        assertTrue(ev[1] is BookXml.Event.Raw)
-        assertEquals("script", (ev[1] as BookXml.Event.Raw).name)
-        assertEquals("if (a<b) x();", (ev[1] as BookXml.Event.Raw).text)
-        assertEquals("p", (ev[2] as BookXml.Event.Start).name)
+        // Start a, Start script (the raw element still opens), Raw,
+        // Start p, Text ok, End p, End a — the reference's read_markup
+        // returns the Start event AND arms raw_until.
+        assertEquals("script", (ev[1] as BookXml.Event.Start).name)
+        assertTrue(ev[2] is BookXml.Event.Raw)
+        assertEquals("script", (ev[2] as BookXml.Event.Raw).name)
+        assertEquals("if (a<b) x();", (ev[2] as BookXml.Event.Raw).text)
+        assertEquals("p", (ev[3] as BookXml.Event.Start).name)
     }
 }

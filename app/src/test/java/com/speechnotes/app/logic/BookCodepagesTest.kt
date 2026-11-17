@@ -24,10 +24,10 @@ class BookCodepagesTest {
         // carry: 0x92 ’ 0x93 “ 0x94 ” 0x97 — 0xA0 a no-break space.
         assertEquals("’", BookCodepages.decodeCp1252(byteArrayOf(0x92.toByte())))
         assertEquals("“”—", BookCodepages.decodeCp1252(byteArrayOf(0x93.toByte(), 0x94.toByte(), 0x97.toByte())))
-        assertEquals(Char(0xA0), BookCodepages.decodeCp1252(byteArrayOf(0xA0.toByte())))
+        assertEquals("\u00A0", BookCodepages.decodeCp1252(byteArrayOf(0xA0.toByte())))
         // The five undefined positions keep their Latin-1 glyph rather
         // than becoming a replacement character.
-        assertEquals(Char(0x81), BookCodepages.decodeCp1252(byteArrayOf(0x81.toByte())))
+        assertEquals("\u0081", BookCodepages.decodeCp1252(byteArrayOf(0x81.toByte())))
     }
 
     @Test
@@ -80,9 +80,9 @@ class BookCodepagesTest {
         // Windows-1252's five undefined positions have no meaning; the
         // decode keeps the C1 control code rather than one replacement
         // character.
-        assertEquals(Char(0x8D), BookCodepages.decodeCp1252(byteArrayOf(0x8D.toByte())))
+        assertEquals("\u008D", BookCodepages.decodeCp1252(byteArrayOf(0x8D.toByte())))
         assertEquals(
-            Char(0x81) + Char(0x8F) + Char(0x90) + Char(0x9D),
+            Char(0x81).toString() + Char(0x8F) + Char(0x90) + Char(0x9D),
             BookCodepages.decodeCp1252(byteArrayOf(0x81.toByte(), 0x8F.toByte(), 0x90.toByte(), 0x9D.toByte()))
         )
     }

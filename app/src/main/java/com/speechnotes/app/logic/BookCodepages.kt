@@ -43,7 +43,30 @@ object BookCodepages {
      *  [decodeNamed]. */
     fun decodeCp1250(data: ByteArray): String = decode("windows-1250", data)
     fun decodeCp1251(data: ByteArray): String = decode("windows-1251", data)
-    fun decodeCp1252(data: ByteArray): String = decode("windows-1252", data)
+
+    fun decodeCp1252(data: ByteArray): String {
+        // The one codepage whose high half the platform charset gets WRONG
+        // for this port's contract: Java's windows-1252 maps the five
+        // undefined positions (0x81, 0x8D, 0x8F, 0x90, 0x9D) to U+FFFD,
+        // but the Rust table's None arm keeps their Latin-1 glyph. 0xA0–
+        // 0xFF are identical in cp1252 and Latin-1, so the decode is
+        // Latin-1 with the 27 defined positions of 0x80–0x9F remapped.
+        val out = StringBuilder(data.size)
+        for (b in data) {
+            val u = b.toInt() and 0xFF
+            out.append(if (u in 0x80..0x9F) CP1252_HIGH_HALF[u - 0x80] ?: u.toChar() else u.toChar())
+        }
+        return out.toString()
+    }
+
+    /** 0x80–0x9F of windows-1252; `null` = an undefined position, which
+     *  keeps its Latin-1 (C1 control) glyph. */
+    private val CP1252_HIGH_HALF: Array<Char?> = arrayOf(
+        '€', null, '‚', 'ƒ', '„', '…', '†', '‡',
+        'ˆ', '‰', 'Š', '‹', 'Œ', null, 'Ž', null,
+        null, '‘', '’', '“', '”', '•', '–', '—',
+        '˜', '™', 'š', '›', 'œ', null, 'ž', 'Ÿ',
+    )
 
     private fun decode(alias: String, data: ByteArray): String =
         charsetFor(alias)?.let { String(data, it) } ?: String(data, Charsets.ISO_8859_1)

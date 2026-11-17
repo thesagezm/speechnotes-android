@@ -1,5 +1,6 @@
 package com.speechnotes.app.logic
 
+import java.io.ByteArrayOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -279,7 +280,7 @@ class BookMobiParserTest {
     @Test
     fun spacePlusAsciiShorthand() {
         // 0xC0-0xFF is the byte-pair form: ' ' then (byte ^ 0x80).
-        assertEquals(" Ai", String(BookMobiParser.decompressPalmdoc(byteArrayOf(0xC1.toByte(), 0xE9.toByte()))))
+        assertEquals(" A i", String(BookMobiParser.decompressPalmdoc(byteArrayOf(0xC1.toByte(), 0xE9.toByte()))))
     }
 
     @Test
@@ -459,7 +460,7 @@ class BookMobiParserTest {
         val hdr = Hdr().apply { codepage = 1252 }
         val header = makeHeaderRecord(hdr, text.size)
         val doc = BookMobiParser.parse(makePdb(listOf(header, text)))
-        assertTrue(doc.chapters[0].html.contains("A “quote”"), doc.chapters[0].html)
+        assertTrue(doc.chapters[0].html, doc.chapters[0].html.contains("A “quote”"))
     }
 
     // ------------------------------------------------------------------
@@ -775,7 +776,7 @@ class BookMobiParserTest {
             // control 0x0D: tags 1 (position), 3 (CNCX), 4 (depth) —
             // tag 2's mask is clear.
             val position = h1At + base
-            val label = if (one == 1L) 0 else 12
+            val label = if (one == 1L) 0L else 12L
             makeIndexEntry("000", 0x0D, listOf(position + two, label, 0))
         }
         val indx = makeIndxHeader(1)

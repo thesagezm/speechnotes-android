@@ -813,7 +813,7 @@ object BookMobiParser {
             // decompressed text can produce an unbalanced tag whose boundary
             // overlaps the previous one. Skip it and keep the cursor.
             if (start < cursor) continue
-            val chunk = from.substring(cursor, start)
+            val chunk = String(bytes, cursor, start - cursor, Charsets.UTF_8)
             cursor = end
             val text = sanitize(decodeEntitiesLenient(stripTags(chunk)))
 
@@ -858,7 +858,7 @@ object BookMobiParser {
             }
         }
 
-        val tail = sanitize(decodeEntitiesLenient(stripTags(from.substring(cursor))))
+        val tail = sanitize(decodeEntitiesLenient(stripTags(String(bytes, cursor, bytes.size - cursor, Charsets.UTF_8))))
         if (tail.isNotEmpty()) {
             if (pendingHeading) {
                 out.add(Item.Heading(tail))

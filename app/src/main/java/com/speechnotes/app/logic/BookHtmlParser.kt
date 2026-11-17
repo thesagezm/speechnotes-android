@@ -64,7 +64,11 @@ object BookHtmlParser {
     fun parseHtmlz(data: ByteArray): BookDoc {
         val archive = ZipReader.parse(data)
             ?: throw BookDocError.Malformed("not an HTML archive: the ZIP does not parse")
-        val names = archive.names.toList()
+        // The reference's Archive::entries() returns every name SORTED BY
+        // NAME, and the picks below ("first .opf", "first image", "first
+        // .html") ride that order — calibre's cover.jpg must beat
+        // images/pic.png for the cover. The zip's own order must not.
+        val names = archive.names.toList().sorted()
         val htmlName = names.firstOrNull { it == "index.html" }
             ?: names.firstOrNull {
                 val lower = it.lowercase()

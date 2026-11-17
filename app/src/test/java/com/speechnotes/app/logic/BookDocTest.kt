@@ -31,8 +31,8 @@ class BookDocTest {
         for (ext in listOf("", "mobile", "mobi3", "mob", "azw4", "fbz", "rt", "html5", "txt2", "epub")) {
             assertNull(DocFamily.fromExtension(ext))
         }
-        assertEquals(false, DocFamily.isDocumentExtension("epub"))
-        assertEquals(true, DocFamily.isDocumentExtension("pdb"))
+        assertEquals("epub keeps its own reader, not the doc family", false, DocFamily.isDocumentExtension("epub"))
+        assertEquals("pdb is the Palm gate", true, DocFamily.isDocumentExtension("pdb"))
     }
 
     @Test
@@ -51,7 +51,7 @@ class BookDocTest {
         )
         assertNotNull(doc.image("000123"))
         assertNotNull(doc.image("cover"))
-        assertNull(doc.image("img/cover"), "the src, not the name")
+        assertNull("the src, not the name", doc.image("img/cover"))
         assertNull(doc.image("missing"))
     }
 
@@ -83,7 +83,7 @@ class BookDocTest {
         assertTrue(page0.contains("<title>One</title>"))
         assertTrue(page0.contains("<p>alpha</p>"))
         val page1 = String(served.read("chapter-1")!!, Charsets.UTF_8)
-        assertTrue(page1.contains("<title>Chapter 2</title>"), "a heading-less chunk is 'Chapter N'")
+        assertTrue("a heading-less chunk is 'Chapter N'", page1.contains("<title>Chapter 2</title>"))
         assertEquals("text/html", served.mimeFor("chapter-0"))
         assert(java.util.Arrays.equals(byteArrayOf(9), served.read("img/000000")))
         assertEquals("image/png", served.mimeFor("img/000000"))

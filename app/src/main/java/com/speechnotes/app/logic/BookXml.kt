@@ -96,20 +96,24 @@ object BookXml {
             val rest = src.substring(pos)
             if (rest.startsWith("<!--")) {
                 val end = rest.indexOf("-->").let { if (it < 0) throw XmlError(line, "unterminated comment") else it }
-                val consumed = pos + 4 + end + 3
+                // `end` is an index into `rest` (the prefix included) — the
+                // Rust reference adds the prefix length because its `end` is
+                // an index into the string AFTER the prefix. Same for the
+                // CDATA and PI branches below.
+                val consumed = pos + end + 3
                 line += src.substring(pos, consumed).count { it == '\n' }
                 return null to consumed
             }
             if (rest.startsWith("<![CDATA[")) {
                 val end = rest.indexOf("]]>").let { if (it < 0) throw XmlError(line, "unterminated CDATA") else it }
-                val text = rest.substring(9, 9 + end)
-                val consumed = pos + 9 + end + 3
+                val text = rest.substring(9, end)
+                val consumed = pos + end + 3
                 line += src.substring(pos, consumed).count { it == '\n' }
                 return Event.Text(text) to consumed
             }
             if (rest.startsWith("<?")) {
                 val end = rest.indexOf("?>").let { if (it < 0) throw XmlError(line, "unterminated processing instruction") else it }
-                val consumed = pos + 2 + end + 2
+                val consumed = pos + end + 2
                 line += src.substring(pos, consumed).count { it == '\n' }
                 return null to consumed
             }
