@@ -277,6 +277,199 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-11-17 — Unit BOOK-F1 (IN FLIGHT, WIP committed on branch
+  `book-formats`): native viewers for MOBI/AZW3/FB2/RTF/HTML/TXT — the
+  speechnotes-linux-rust BookDoc port — PLUS the EPUB TOC-jump fix.**
+  User ask (2026-11-17): "incorporate the mobi/azw3/fb2/rtf/html formats
+  that they are rendered well in the android app... their code should be
+  like the speechnotes linux app... rendering should not parse or convert
+  them to epub but rather views them in their own viewers... use as much of
+  the speechnotes-linux-rust code as possible"; ALSO "in epub the toc
+  chapters do not go to the linked chapters using toc also fix this"; no
+  subagents (RAM), Waydroid testing, build on top of the latest commit,
+  keep the work distinguishable for revert. The branch IS the revert
+  boundary: `book-formats` off `main` at `a78c043` (which first committed
+  the previous session's uncommitted G2+G3 units — that commit is on main,
+  so `git checkout main` is the pre-BOOK-F1 state).
+
+  **GROUND TRUTH found this session:**
+  - Android has NO mobi/fb2/rtf/html parser at all. `DocumentBook.canNormalize`
+    returns true for them but `DocumentBook.parse` THROWS ("not a document
+    this reader supports") — importing one of these formats today fails with
+    "Could not read that file". The reference parsers live in
+    `~/code/speechnotes-linux-rust/crates/sn-doc/src/` (mobi.rs 3342 lines,
+    fb2.rs 1021, htmlbook.rs 1317, rtf.rs 830, plainbook.rs 725, huffcdic.rs
+    373, codepages.rs 295, xml.rs 657, bookdoc.rs 300) and the serving half in
+    `crates/sn-store/src/books.rs` (`ServedBookDoc`). The linux design: every
+    headless format reduces to one `BookDoc` (metadata, cover, chapters of
+    plain XHTML, TOC rows with depth, images with `img/NNNNNN` names);
+    NOTHING becomes EPUB; the file on disk stays `original.mobi` etc.; the
+    reader's scheme handler serves virtual `chapter-N` pages + `img/<name>`
+    bytes; the speech path extracts with the ordinary chapter pass.
+  - `~/code/speechnotes-bookformats/` is an OLDER recovered copy of the same
+    repo — use `speechnotes-linux-rust` (it is the newer, working one).
+
+  **DONE (all code written, `compileDebugKotlin` BUILD SUCCESSFUL):**
+  - New pure `logic/` files, ported file-by-file from the Rust: `BookDoc.kt`
+    (model + `DocFamily` extension table + `chapterPage`/`xmlEscape` +
+    `ServedBookDoc` with the one `parse(extension, bytes)` dispatch incl.
+    the `.pdb`-is-not-Mobipocket gate), `BookCodepages.kt`, `BookXml.kt`
+    (tolerant pull parser, HTML5 entity set, raw-text script/style),
+    `BookTxtParser.kt` (decode battery UTF-8/16/32/BOM-less/latin-1 +
+    Gutenberg/Markdown/numbered-heading chapterize + markdown strip),
+    `BookRtfParser.kt` (group stack, `\'hh`, `\uN?`+\ucN fallback,
+    ansicpg, skip-destinations, emphasis heading heuristic),
+    `BookFb2Parser.kt` (title-info author only, coverpage, binaries→pool,
+    bold-first-paragraph fallback, tables), `BookHtmlParser.kt` (tolerant
+    tokenizer + htmlz via the existing `ZipReader`: index.html, OPF
+    metadata wins, cover, img rewriting), `BookHuffCdic.kt` (the 'DH'
+    decompressor, lazy dictionary expansion), `BookMobiParser.kt` (~1,700
+    lines: PDB dual-layout record list chosen by VALIDITY, trailing-entry
+    peel, PalmDOC LZ77, HUFF/CDIC, EXTH (202=thumbnail, 116=KF8 boundary),
+    hybrid BOUNDARY pick, recindex/kindle:embed image pools, the
+    INDX/TAGX/IDXT/CNCX publisher TOC with byte-offset cuts + snapping,
+    KF8 flow chapters with epub:type titles + echo-drops, heading +
+    chunked fallbacks, Gutenberg editorial scrubbers).
+  - **Recorded divergences (deliberate):** (1) `BookCodepages` uses the
+    platform charsets (`Charset.forName("windows-1250..1258")`, KOI8-R —
+    ICU on Android, extended charsets on the desktop JVM) instead of the
+    Rust file's 10 hand-typed 128-char tables — hand transcription kept
+    mangling the tables; the letters the Rust tests pin (привет, ё/Ё,
+    ’ “ ” —, ł ż, α, ı ş, KOI8-R П) are re-pinned in `BookCodepagesTest`
+    against the platform decode, and undefined bytes keep their Latin-1
+    glyph (Java's cp1252 does too). (2) The MOBI item walk's tag-name
+    matching is case-INSENSITIVE (`<P>`, `<H1>` count as boundaries; Rust
+    matched lowercase only — uppercase tags in old books produced one long
+    paragraph there). (3) `logic/` gains NO third-party dependency (rule)
+    — htmlz uses the existing `ZipReader`.
+  - Tests written (ported from the Rust suites, ~70 pins): `BookDocTest`,
+    `BookCodepagesTest`, `BookXmlTest`, `BookTxtParserTest`,
+    `BookRtfParserTest`, `BookFb2ParserTest` (fixture verbatim),
+    `BookHtmlParserTest` (STORED-zip builder for htmlz),
+    `BookHuffCdicTest` (terminal fixture + compressed-entry expansion +
+    corrupt tables + truncation), `BookMobiParserTest` (byte-wise
+    make_pdb/make_header_record/palmdoc_encode/vwi/INDX/CNCX fixtures;
+    decompression, trailing entries, whole-book parses, EXTH, DRM
+    refusal, images, KF8 flows, publisher TOC, snapping, index-entry
+    walk).
+
+  **THE TEST SUITE DOES NOT COMPILE YET — exactly 5 mechanical fixes
+  left (the parsers themselves are clean):**
+  1. Add `import java.io.ByteArrayOutputStream` to `BookHuffCdicTest.kt`
+     and `BookMobiParserTest.kt` (Unresolved reference at ~10 sites).
+  2. JUnit message order is (message, args) — fix `BookDocTest.kt:54`
+     (`assertNull(doc.image("img/cover"), "the src, not the name")` →
+     `assertNull("the src, not the name", ...)`), `BookDocTest.kt:86`
+     (Boolean-first assertEquals → `assertEquals("…", false,
+     DocFamily.isDocumentExtension("epub"))` shape), `BookMobiParserTest.kt:462`
+     (`assertTrue(cond, msg)` → `assertTrue(msg, cond)`).
+  3. `BookCodepagesTest.kt` ~line 85: a regex rewrite pass produced a
+     possibly-broken multi-line `assertEquals` in
+     "anUndefinedByteKeepsItsLatin1Glyph" — inspect and repair to
+     `assertEquals(Char(0x81).toString() + Char(0x8F) + Char(0x90) +
+     Char(0x9D), BookCodepages.decodeCp1252(byteArrayOf(0x81, 0x8F, 0x90,
+     0x9D)))` style.
+  4. `BookMobiParserTest.kt` `tocFixture`: `val label = if (one == 1L) 0
+     else 12` mixes Int into `List<Long>` (error "List<Number &
+     Comparable<*>>") → make it `0L` / `12L`.
+  5. Re-run `testDebugUnitTest`; then fix any BEHAVIORAL diffs the pins
+     surface (that is what they are for).
+
+  **WIRING PLAN (next, not yet started — one unit):**
+  - `Book.format` for these books = the file's own extension ("mobi",
+    "azw3", "fb2", "rtf", "html", "txt"); `formatLabel` = uppercase ext
+    ("MOBI"/"AZW3"/"FB2"/"RTF"/"HTML"/"TXT"). `BookTocEntry` gains
+    `depth: Int = 0` (fb2/mobi nesting) AND `href: String? = null` (the
+    EPUB TOC fix) — both additive with defaults, JSON-safe, Android-local
+    (book manifests are not an iOS contract).
+  - ViewModel: `importBook`'s `known` gate + the picker path accept
+    `DocFamily.fromExtension(ext)`; `importDocument` splits — office
+    formats (docx/odt/pptx/odp) KEEP the existing normalize-to-EPUB path,
+    doc formats go to a new `importBookDoc(book, file, ext, displayName)`:
+    parse via `ServedBookDoc.parse` on IO → manifest (title/author from
+    the doc, chapters = spine labels, toc = doc.toc.ifEmpty { derive from
+    chapter titles }, spineCount, cover bytes → bookCoverFile — the cover
+    may be PNG bytes; the file name cover.jpg is legacy, decoders sniff
+    content) → `books.endImport`. NO EPUB CONVERSION ANYWHERE. Failures
+    → importError exactly like importEpub.
+  - ViewModel: a small synchronized LRU (2 entries, LinkedHashMap
+    accessOrder) `servedDocs: bookId → ServedBookDoc` + `suspend fun
+    servedDoc(bookId)` (parse original.<ext> on IO on miss) + a sync
+    `servedDocOrNull` for the WebView handler thread.
+  - Narration: `chapterText(book, index)` gains the doc branch — parse
+    (LRU) → `XhtmlText.plainText(doc.chapters[index].html)` → cache via
+    the existing `bookSpeechTextFile`. `toggleBookChapter`/
+    `narrateFromSpot` then work unchanged.
+  - Reader: a NEW own viewer (NOT epub.js) — `ui/books/DocReaderScreen.kt`
+    dispatched from `BookReaderScreen`'s `when (book.format)` via
+    `DocFamily.isDocumentExtension(book.format)`; WebView +
+    WebViewAssetLoader with a CUSTOM PathHandler at `/docs/` (capture vm +
+    bookId; `handle()` → `vm.servedDocOrNull(bookId)?.read(name)` →
+    WebResourceResponse(mimeFor(name))) + the assets handler for the
+    shell; new assets `index-doc-android.html` + `docreader.js` (~150
+    lines): fetch `{book}/chapter-N` into #content, `<base
+    href="https://appassets.androidplatform.net/docs/<id>/">` so the
+    chapters' relative `img/NNNNNN` srcs resolve to the PathHandler, the
+    SAME readerAppearance JSON protocol as reader.js (theme via the Rust
+    mechanism — background !important on html, body transparent;
+    typography/margins on #content), scroll-fraction relocation events
+    through the existing AndroidReaderBridge shape, `docGoChapter(i)`,
+    chromeTap. Position = book.position (chapter) + positionFraction
+    (scroll fraction, restored after render). TOC sheet from book.toc
+    rows with depth indentation. Chrome mirrors the EPUB reader:
+    portrait bottom bar + `bookBarMinimized` pill + landscape
+    PlaybackRail (shared `ui/playback` composables); REUSE
+    `ReaderAppearanceSheet` and `EpubChapterBar` by making them
+    `internal` in BookReaderScreen.kt. **Recorded divergence: scrolled
+    flow only** (linux paginates bookdocs via foliate-js; column
+    pagination is a follow-up — hide the Page-view row for doc formats).
+  - BookDrop: `LocalSendProtocol.acceptedExtensions` += the DocFamily
+    extensions (they are landable now — the old comment at ~line 388
+    says they were refused because "the parsers here cannot read them";
+    update it).
+  - BooksScreen picker: check the open-document intent's mime filter
+    includes the new extensions.
+  - **EPUB TOC BUG — ROOT CAUSE FOUND, fix designed:** `EpubParser.resolve()`
+    percent-decodes and normalizes TOC hrefs but KEEPS the `#fragment`;
+    both spine hrefs and TOC hrefs go through the same resolve(), so the
+    fragment is the ONLY mismatch — and `importEpub` maps
+    `parsed.spine.indexOfFirst { it == entry.href }` → **-1 for every
+    anchored TOC row → coerced to 0 → every anchored TOC row jumps to
+    chapter 1** (Calibre books anchor everything; that is the user's
+    report). FIX: (a) in `importEpub`, match the spine with the fragment
+    stripped (`entry.href.substringBefore('#')`), keep the FULL href in
+    the new `BookTocEntry.href` field (null when no match);
+    (b) in the EPUB Contents sheet tap, when `entry.href` is present call
+    `window.readerGoToHref(<full href incl. fragment>)` (epub.js
+    `display(href)` resolves spine+anchor — the existing fallback rows
+    already use this and work), else fall back to
+    `readerGoChapter(entry.chapterIndex)`; (c) ALSO fix the existing
+    `hrefToc` fallback's `java.net.URLEncoder.encode(href, "UTF-8")` —
+    that is FORM encoding (space → '+'); append `.replace("+", "%20")`
+    at both call sites.
+
+  **REMAINING STEPS in order:** (1) the 5 test fixes above → suite
+  green; (2) the wiring unit → suite green; (3) the EPUB TOC fix; (4)
+  x86_64 APK build (`-Psplits=true assembleDebug` — NOTE: the per-ABI
+  invocation is `-Psplits=true assembleDebug`, NOT `assembleDebugX86_64`);
+  (5) Waydroid pass — container was STOPPED at session start
+  (2026-11-17, `waydroid status` said Session STOPPED; if `waydroid
+  container start` needs root, ask the user, as past sessions did):
+  import one book per format (a Gutenberg .txt, an .html page, an .rtf,
+  an .fb2, a .mobi and an .azw3 if the user has them — calibre can
+  produce all), check shelf covers, reader rendering, TOC jumps
+  (incl. a fragment TOC in an EPUB), TTS on a doc book, narration jump
+  from Contents; (6) QUEUE.md + commit on `book-formats`; device pass
+  green → merge to main + push (GitHub gate rules apply).
+  Environment notes: constrained gradle invocation is `flock
+  /tmp/sn-gradle.lock ./gradlew --offline --no-daemon
+  -Dorg.gradle.jvmargs=-Xmx1500m -Dkotlin.compiler.execution.strategy=in-process`
+  (host RAM 7.5G total / ~1.7G free; disk healthy, 142G free). Kotlin
+  deprecations are ERRORS in this build — `Byte.toChar()` is banned;
+  use `(b.toInt() and 0xFF).toChar()` (Int.toChar() is fine — precedent
+  in SpeechSanitizer.kt). `ByteArray.indexOf(element, startIndex)` does
+  not exist in the stdlib — BookMobiParser has `byteIndexOf`.
+
 - **2026-11-15 — Unit G3: the sentence-gap tightening pass (chunk silence
   trim) — CODE-COMPLETE (282/282 green, both split APKs rebuilt); DEVICE
   VERDICT = the user's (their phone).** User verdict on G2 (phone,
