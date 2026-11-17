@@ -139,16 +139,23 @@ enum class DocFamily {
     Txt;
 
     companion object {
+        /** Extension → family, the ONE table: the import gate, the BookDrop
+         *  allowlist, the file picker and the narration path all read it, so
+         *  they cannot drift apart. */
+        private val byExtension: Map<String, DocFamily> = mapOf(
+            "mobi" to Mobi, "azw" to Mobi, "azw3" to Mobi, "prc" to Mobi, "pdb" to Mobi,
+            "fb2" to Fb2,
+            "rtf" to Rtf,
+            "html" to Html, "htm" to Html, "htmlz" to Html,
+            "txt" to Txt, "text" to Txt,
+        )
+
+        /** Every extension the family reads — the allowlist lists. */
+        val extensions: Set<String> = byExtension.keys
+
         /** The family a file extension imports as, or `null` when the
          *  extension is not a headless book format. */
-        fun fromExtension(extension: String): DocFamily? = when (extension.lowercase()) {
-            "mobi", "azw", "azw3", "prc", "pdb" -> Mobi
-            "fb2" -> Fb2
-            "rtf" -> Rtf
-            "html", "htm", "htmlz" -> Html
-            "txt", "text" -> Txt
-            else -> null
-        }
+        fun fromExtension(extension: String): DocFamily? = byExtension[extension.lowercase()]
 
         /** Whether [extension] names a headless book format. The cheap half
          *  of [fromExtension], for lists that only need the yes/no. */

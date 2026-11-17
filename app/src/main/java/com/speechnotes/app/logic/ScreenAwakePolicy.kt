@@ -20,6 +20,8 @@ package com.speechnotes.app.logic
 enum class ScreenAwakeSurface {
     EPUB_READER,
     PDF_READER,
+    /** The headless doc formats' own reader (mobi/fb2/rtf/html/txt). */
+    DOC_READER,
     AUDIOBOOK_READER,
     NOTE_READER,
 }

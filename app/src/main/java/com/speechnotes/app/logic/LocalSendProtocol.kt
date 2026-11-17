@@ -377,25 +377,28 @@ class BookDropCore(
          *
          * Everything here has a landing path on THIS platform:
          *  - .jex into the notes (the JEX importer),
-         *  - epub/pdf, the audio containers and the office formats into the
-         *    shelf,
+         *  - epub/pdf, the audio containers, the office formats and the
+         *    headless doc formats (mobi/azw3/fb2/rtf/html — the BookDoc
+         *    readers land them natively now; they were refused while the
+         *    parsers here could not read them) into the shelf,
          *  - .wav into Exports, beside the app's own recordings — iOS
          *    v1.8.1 routing parity,
          *  - .md/.markdown/.txt/.text as a NOTE — iOS routes a note shared
          *    from another device to the notes, because the book importer
-         *    would flatten it into a one-chapter EPUB.
+         *    would flatten it into a one-chapter EPUB. (.txt/.text are
+         *    DocFamily extensions too, but the NOTE routing wins — the
+         *    receiver checks the note extensions first.)
          *
-         * Formats the parsers here cannot read (mobi/azw3/fb2/rtf/html —
-         * iOS accepts them because its readers can land them) and the
-         * containers Android cannot play (opus/ogg/oga) are refused at
+         * Containers Android cannot play (opus/ogg/oga) are refused at
          * prepare-upload time, rather than accepted and then failed one by
          * one with "could not read".
          */
         val acceptedExtensions: Set<String> = setOf(
             "epub", "pdf", "m4b", "m4a", "mp4", "mp3", "jex",
             "wav",
-            "md", "markdown", "txt", "text",
-        ) + com.speechnotes.app.logic.DocumentBook.parsedExtensions
+            "md", "markdown",
+        ) + com.speechnotes.app.logic.DocumentBook.parsedExtensions +
+            com.speechnotes.app.logic.DocFamily.extensions
 
         fun extension(name: String): String = name.substringAfterLast('.', "").lowercase()
 

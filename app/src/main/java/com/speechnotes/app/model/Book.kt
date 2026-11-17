@@ -82,10 +82,13 @@ data class Book(
         }
 
     val formatLabel: String
-        get() = when (format) {
-            FORMAT_EPUB -> "EPUB"
-            FORMAT_PDF -> "PDF"
-            FORMAT_AUDIO -> "Audiobook"
+        get() = when {
+            format == FORMAT_EPUB -> "EPUB"
+            format == FORMAT_PDF -> "PDF"
+            format == FORMAT_AUDIO -> "Audiobook"
+            // A headless doc format's label is its own extension — the
+            // file's name is the format (mobi/azw3/fb2/rtf/html/txt/…).
+            com.speechnotes.app.logic.DocFamily.isDocumentExtension(format) -> format.uppercase()
             else -> "Book"
         }
 }
@@ -100,9 +103,23 @@ data class BookChapter(
     val endPage: Int = 0,
 )
 
-/** TOC row for the reader sidebar. */
+/** TOC row for the reader sidebar.
+ *
+ *  [depth] carries the book's own nesting (a MOBI's CNCX levels, an FB2's
+ *  section tree) so the contents list can indent the way the book did.
+ *  [href] carries a book TOC's own target (the anchored EPUB href) when the
+ *  row's destination is finer than a whole chapter — the Contents sheet
+ *  jumps by href then, with [chapterIndex] as the fallback.
+ *
+ *  Both fields are Android-local: book manifests are not an iOS JSON
+ *  contract (see Book.forceOCR). */
 @Serializable
-data class BookTocEntry(val label: String, val chapterIndex: Int)
+data class BookTocEntry(
+    val label: String,
+    val chapterIndex: Int,
+    val depth: Int = 0,
+    val href: String? = null,
+)
 
 /** Audiobook chapter from chpl/ID3 metadata. */
 @Serializable

@@ -173,7 +173,10 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
         when (ext) {
             "epub" -> importEpub(book, target)
             "pdf" -> importPdf(book, target, name.substringBeforeLast('.'))
-            else -> if (com.speechnotes.app.logic.DocumentBook.canNormalize(ext)) {
+            else -> if (com.speechnotes.app.logic.DocFamily.isDocumentExtension(ext)) {
+                // Headless doc formats land as themselves — no EPUB conversion.
+                importBookDoc(book, target, ext, name.substringBeforeLast('.'))
+            } else if (com.speechnotes.app.logic.DocumentBook.canNormalize(ext)) {
                 importDocument(book, target, ext, name.substringBeforeLast('.'))
             } else {
                 importAudio(book, target, ext)
@@ -883,11 +886,17 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
                 mime.contains("epub") -> "epub"
                 mime.contains("pdf") -> "pdf"
                 mime.contains("audio") || mime.contains("mp4") -> "m4b"
+                mime.contains("mobipocket") -> "mobi"
+                mime.contains("fictionbook") -> "fb2"
+                mime.contains("rtf") -> "rtf"
+                mime.contains("html") -> "html"
+                mime.contains("text/plain") -> "txt"
                 else -> ""
             }
         }
         val known = ext == "epub" || ext == "pdf" || ext == "m4b" || ext == "m4a" ||
-            ext == "mp4" || ext == "mp3" || DocumentBook.canNormalize(ext)
+            ext == "mp4" || ext == "mp3" || DocumentBook.canNormalize(ext) ||
+            com.speechnotes.app.logic.DocFamily.isDocumentExtension(ext)
         if (!known) {
             showToast("Unsupported file type: $name")
             return
@@ -924,7 +933,13 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
                 // original.<ext>, and nameWithoutExtension of THAT is
                 // "original" — the title every imported PDF wore.
                 "pdf" -> importPdf(book, target, name.substringBeforeLast('.'))
-                else -> if (DocumentBook.canNormalize(ext)) {
+                else -> if (com.speechnotes.app.logic.DocFamily.isDocumentExtension(ext)) {
+                    // Headless doc formats (mobi/azw3/fb2/rtf/html/txt) land
+                    // as themselves — no EPUB conversion (speechnotes-linux-
+                    // rust's BookDoc design; the doc reader serves the parse).
+                    importBookDoc(book, target, ext, name.substringBeforeLast('.'))
+                } else if (DocumentBook.canNormalize(ext)) {
+                    // Office documents keep the normalize-to-EPUB pipeline.
                     importDocument(book, target, ext, name.substringBeforeLast('.'))
                 } else {
                     importAudio(book, target, ext)
@@ -982,8 +997,19 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
             chapters = parsed.spine.mapIndexed { i, href -> BookChapter(label = "Chapter ${i + 1}", href = href) },
             spineCount = parsed.spine.size.takeIf { it > 0 },
             toc = parsed.toc.map { entry ->
-                val index = parsed.spine.indexOfFirst { it == entry.href }
-                BookTocEntry(entry.label, if (index >= 0) index else 0)
+                // THE EPUB TOC BUG: both spine hrefs and TOC hrefs go through
+                // the same resolve(), so the #fragment was the ONLY mismatch
+                // — indexOfFirst returned -1 for every ANCHORED TOC row, and
+                // the -1 was coerced to 0 ("every anchored TOC jump lands on
+                // chapter 1"; Calibre books anchor everything). Match with
+                // the fragment stripped; the FULL href rides BookTocEntry.href
+                // so the reader can jump to the anchor itself.
+                val index = parsed.spine.indexOfFirst { it == entry.href.substringBefore('#') }
+                BookTocEntry(
+                    label = entry.label,
+                    chapterIndex = if (index >= 0) index else 0,
+                    href = entry.href.takeIf { index >= 0 },
+                )
             },
             importError = failure,
         )
@@ -1207,6 +1233,118 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
         runCatching { source.delete() }
         importEpub(book, epubFile)
     }
+
+    /**
+     * Import a headless doc format (mobi/azw3/fb2/rtf/html/txt — the
+     * DocFamily extensions): the file STAYS `original.<ext>` on disk and one
+     * parsed [com.speechnotes.app.logic.BookDoc] carries everything —
+     * metadata, cover, chapters of plain XHTML, contents. NO EPUB
+     * conversion anywhere (speechnotes-linux-rust's design: every headless
+     * format reduces to a BookDoc; the doc reader serves its chapters as
+     * virtual `chapter-N` pages and the speech path extracts them with the
+     * ordinary [com.speechnotes.app.logic.XhtmlText] pass).
+     */
+    private suspend fun importBookDoc(book: Book, file: File, ext: String, displayName: String) {
+        var failure: String? = null
+        val parsed = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { com.speechnotes.app.logic.ServedBookDoc.parse(ext, file.readBytes()) }
+                .getOrElse { error ->
+                    LogStore.error("DocImport: $ext parse failed — ${error::class.simpleName}: ${error.message}")
+                    when (error) {
+                        is com.speechnotes.app.logic.BookDocError.Malformed ->
+                            failure = "That $ext file is malformed — ${error.message.orEmpty()}"
+                        is com.speechnotes.app.logic.BookDocError.Unsupported ->
+                            failure = error.message
+                        else -> failure = null
+                    }
+                    null
+                }
+        }
+        if (parsed == null) {
+            cleanupFailedImport(book)
+            val message = failure ?: "Could not read that $ext file."
+            books.endImport(null, message)
+            showToast(message)
+            return
+        }
+        val doc = parsed.doc
+        if (doc.chapters.isEmpty()) {
+            cleanupFailedImport(book)
+            books.endImport(null, "That $ext file has no readable text.")
+            showToast("That $ext file has no readable text.")
+            return
+        }
+
+        // Cover: the doc's own artwork when the format carries one. The
+        // bytes may be PNG or JPEG — cover.jpg is the legacy NAME, image
+        // decoders sniff the content.
+        val coverWritten = doc.cover?.let { cover ->
+            runCatching {
+                com.speechnotes.app.logic.AppFiles.bookCoverFile(book.id).writeBytes(cover.data)
+            }.isSuccess
+        } ?: false
+        if (!coverWritten) {
+            LogStore.info("BookCovers: $ext ${file.name} has no extractable cover — using a typographic one")
+            syntheticCover(book.id, doc.title ?: displayName)
+        }
+        val manifest = book.copy(
+            title = doc.title ?: displayName.ifBlank { file.nameWithoutExtension },
+            author = doc.author,
+            // The format IS the file's own extension: the reader dispatches on
+            // DocFamily, the shelf label is the uppercase extension.
+            format = ext,
+            hasCover = com.speechnotes.app.logic.AppFiles.bookCoverFile(book.id).isFile,
+            chapters = doc.chapters.mapIndexed { i, chapter ->
+                BookChapter(
+                    label = chapter.title ?: "Chapter ${i + 1}",
+                    // The virtual page the doc reader's scheme handler serves.
+                    href = com.speechnotes.app.logic.BookDoc.spineName(i),
+                )
+            },
+            spineCount = doc.chapters.size.takeIf { it > 0 },
+            toc = doc.toc.ifEmpty {
+                // No contents of its own (plain text, heading-chunked) — flat
+                // rows derived from the chapter titles, like a spine list.
+                doc.chapters.mapIndexed { i, chapter ->
+                    com.speechnotes.app.logic.BookToc(chapter.title ?: "Chapter ${i + 1}", i)
+                }
+            }.map { row -> BookTocEntry(label = row.label, chapterIndex = row.chapterIndex, depth = row.depth) },
+        )
+        books.endImport(manifest)
+        showToast("Imported ${manifest.chapters.size} chapters")
+    }
+
+    // The parsed headless docs (mobi/fb2/rtf/html/txt), LRU-capped at 2:
+    // the doc reader's scheme handler must answer chapter/image requests
+    // synchronously (shouldInterceptRequest runs on a WebView thread with no
+    // coroutine there), and the narration path shares the same parse.
+    private val servedDocs =
+        object : LinkedHashMap<String, com.speechnotes.app.logic.ServedBookDoc>(4, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, com.speechnotes.app.logic.ServedBookDoc>,
+            ): Boolean = size > 2
+        }
+    private val servedDocsLock = Any()
+
+    /** The parsed doc book for [bookId] — parsing `original.<ext>` on IO on
+     *  a cache miss. Null when the book is not a doc format (or refuses to
+     *  parse; the import path already told the user about that). */
+    suspend fun servedDoc(bookId: String): com.speechnotes.app.logic.ServedBookDoc? =
+        withContext(kotlinx.coroutines.Dispatchers.IO) {
+            synchronized(servedDocsLock) { servedDocs[bookId] }?.let { return@withContext it }
+            val ext = originalExtension(books.book(bookId) ?: return@withContext null)
+            if (!com.speechnotes.app.logic.DocFamily.isDocumentExtension(ext)) return@withContext null
+            val file = com.speechnotes.app.logic.AppFiles.bookOriginalFile(bookId, ext)
+            if (!file.isFile) return@withContext null
+            runCatching { com.speechnotes.app.logic.ServedBookDoc.parse(ext, file.readBytes()) }
+                .onSuccess { parsed -> synchronized(servedDocsLock) { servedDocs[bookId] = parsed } }
+                .getOrNull()
+        }
+
+    /** The cache-only half for the WebView handler thread — a miss answers
+     *  404, and the reader screen warms the cache before its shell loads. */
+    fun servedDocOrNull(bookId: String): com.speechnotes.app.logic.ServedBookDoc? =
+        synchronized(servedDocsLock) { servedDocs[bookId] }
 
     /** Re-runs the cover pass if one isn't already in flight. */
     fun ensureBookCovers() {
@@ -1525,7 +1663,20 @@ class SpeechnotesViewModel(application: android.app.Application) : androidx.life
                 } else null
                 }
             }
-            else -> null
+            else -> if (com.speechnotes.app.logic.DocFamily.isDocumentExtension(book.format)) {
+                // Headless doc formats: the parsed BookDoc's chapters ARE the
+                // speech units — the same plain-XHTML extract the reader
+                // renders, cached through the ordinary bookSpeechTextFile.
+                val cached = com.speechnotes.app.logic.AppFiles.bookSpeechTextFile(book.id, chapterIndex)
+                if (cached.isFile && cached.length() > 0) return@withContext cached.readText()
+                val served = servedDoc(book.id) ?: return@withContext null
+                val chapter = served.doc.chapters.getOrNull(chapterIndex) ?: return@withContext null
+                val text = com.speechnotes.app.logic.XhtmlText.plainText(chapter.html)
+                if (text.isNullOrBlank()) null else {
+                    runCatching { cached.parentFile?.mkdirs(); cached.writeText(text) }
+                    text
+                }
+            } else null
         }
     }
 

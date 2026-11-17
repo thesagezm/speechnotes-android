@@ -136,6 +136,12 @@ fun BooksScreen(
                     arrayOf(
                         "application/epub+zip",
                         "application/pdf",
+                        // The headless doc formats the BookDoc readers land.
+                        "application/x-mobipocket-ebook",
+                        "application/x-fictionbook+xml",
+                        "application/rtf",
+                        "text/html",
+                        "text/plain",
                         "audio/mp4",
                         "audio/x-m4b",
                         "audio/mpeg",

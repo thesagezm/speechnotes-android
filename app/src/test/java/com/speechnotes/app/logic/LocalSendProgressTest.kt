@@ -160,19 +160,23 @@ class LocalSendProgressTest {
     fun `accepted extensions are exactly the formats the router can land`() {
         // iOS v1.8.1 routing parity: the shelf formats, plus the three
         // families Android now lands the way iOS does — .jex into the
-        // notes, .wav into Exports, .md/.txt as a NOTE.
+        // notes, .wav into Exports, .md/.txt as a NOTE — and the headless
+        // doc formats, which land natively through the BookDoc readers.
         val expected = setOf(
             "epub", "pdf", "m4b", "m4a", "mp4", "mp3", "jex",
             "docx", "odt", "pptx", "odp",
             "wav",
             "md", "markdown", "txt", "text",
+            "mobi", "azw", "azw3", "prc", "pdb", "fb2", "rtf", "html", "htm", "htmlz",
         )
         assertEquals(expected, BookDropCore.acceptedExtensions)
-        // The old set advertised formats the import pipeline cannot parse.
-        for (unparseable in setOf("mobi", "azw3", "fb2", "rtf", "html", "opus", "ogg", "oga")) {
+        // The old set advertised formats the import pipeline cannot parse;
+        // the genuinely unlandable set today is the unplayable audio
+        // containers.
+        for (unlandable in setOf("opus", "ogg", "oga")) {
             assertTrue(
-                "$unparseable must not be accepted",
-                !BookDropCore.acceptedExtensions.contains(unparseable),
+                "$unlandable must not be accepted",
+                !BookDropCore.acceptedExtensions.contains(unlandable),
             )
         }
     }

@@ -180,18 +180,27 @@ fun BookReaderScreen(vm: SpeechnotesViewModel, bookId: String, onBack: () -> Uni
         },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
-            when (book.format) {
-                Book.FORMAT_EPUB -> {
+            when {
+                book.format == Book.FORMAT_EPUB -> {
                     com.speechnotes.app.ui.playback.KeepScreenOnSurface(
                         com.speechnotes.app.logic.ScreenAwakeSurface.EPUB_READER,
                     )
                     EpubReader(vm, book)
                 }
-                Book.FORMAT_PDF -> {
+                book.format == Book.FORMAT_PDF -> {
                     com.speechnotes.app.ui.playback.KeepScreenOnSurface(
                         com.speechnotes.app.logic.ScreenAwakeSurface.PDF_READER,
                     )
                     PdfReader(vm, book, showPdfContents)
+                }
+                // The headless doc formats' own reader — NOT the epub.js one
+                // and NOT an EPUB conversion: the parsed BookDoc's chapters
+                // are served as virtual pages over the /docs/ scheme.
+                com.speechnotes.app.logic.DocFamily.isDocumentExtension(book.format) -> {
+                    com.speechnotes.app.ui.playback.KeepScreenOnSurface(
+                        com.speechnotes.app.logic.ScreenAwakeSurface.DOC_READER,
+                    )
+                    DocReader(vm, book)
                 }
                 else -> {
                     com.speechnotes.app.ui.playback.KeepScreenOnSurface(
@@ -206,7 +215,7 @@ fun BookReaderScreen(vm: SpeechnotesViewModel, bookId: String, onBack: () -> Uni
 
 // MARK: - EPUB
 
-private class ReaderBridge(val onMessage: (String) -> Unit) {
+internal class ReaderBridge(val onMessage: (String) -> Unit) {
     @JavascriptInterface
     fun post(json: String) = onMessage(json)
 }
@@ -488,9 +497,27 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                                     showToc = false
                                     currentChapter = entry.chapterIndex
                                     vm.saveBookPosition(book.id, entry.chapterIndex + 1, 0.0, null)
-                                    webViewRef.value?.evaluateJavascript(
-                                        "window.readerGoChapter && window.readerGoChapter(${entry.chapterIndex});", null,
-                                    )
+                                    // An anchored TOC row jumps by its own href —
+                                    // epub.js's display(href) resolves spine AND
+                                    // anchor, which the chapter-index jump could
+                                    // never reach (the fragment was the one thing
+                                    // the spine match had to strip). Plain rows
+                                    // keep the chapter-index jump.
+                                    if (entry.href != null) {
+                                        // URLEncoder is FORM encoding — a space
+                                        // becomes '+' and the href misses its
+                                        // file; decode-safe percent form instead.
+                                        val encoded = java.net.URLEncoder
+                                            .encode(entry.href, "UTF-8")
+                                            .replace("+", "%20")
+                                        webViewRef.value?.evaluateJavascript(
+                                            "window.readerGoToHref && window.readerGoToHref(\"$encoded\");", null,
+                                        )
+                                    } else {
+                                        webViewRef.value?.evaluateJavascript(
+                                            "window.readerGoChapter && window.readerGoChapter(${entry.chapterIndex});", null,
+                                        )
+                                    }
                                     // R3 (iOS 583acdb): a Contents jump during
                                     // read-along MOVES the speech.
                                     if (vm.isBookNarrating(book)) {
@@ -505,7 +532,11 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                                 headlineContent = { Text(label) },
                                 modifier = Modifier.clickable {
                                     showToc = false
-                                    val encoded = java.net.URLEncoder.encode(href, "UTF-8")
+                                    // URLEncoder is FORM encoding — a space
+                                    // becomes '+' and epub.js misses the file.
+                                    val encoded = java.net.URLEncoder
+                                        .encode(href, "UTF-8")
+                                        .replace("+", "%20")
                                     webViewRef.value?.evaluateJavascript(
                                         "window.readerGoToHref && window.readerGoToHref(\"$encoded\");", null,
                                     )
@@ -552,17 +583,23 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                 onTapInverted = { vm.setReaderTapInverted(it) },
             )
         }
+
+        // The landscape rail's voice chip (the PDF reader had the sheet; the
+        // EPUB reader had the state but no sheet — the chip opened nothing).
+        if (showVoicePicker) {
+            com.speechnotes.app.ui.voice.VoicePickerSheet(vm = vm, onDismiss = { showVoicePicker = false })
+        }
     }
 }
 
-private fun goChapter(webViewRef: androidx.compose.runtime.MutableState<WebView?>, index: Int) {
+internal fun goChapter(webViewRef: androidx.compose.runtime.MutableState<WebView?>, index: Int) {
     webViewRef.value?.evaluateJavascript(
         "window.readerGoChapter && window.readerGoChapter($index);", null,
     )
 }
 
 /** "Chapter 3 of 41 · 12%", iOS chapterBar parity. */
-private fun currentChapterLabel(book: Book, index: Int, total: Int): String {
+internal fun currentChapterLabel(book: Book, index: Int, total: Int): String {
     val label = book.toc.firstOrNull { it.chapterIndex == index }?.label
         ?: book.chapters.getOrNull(index)?.label
     return when {
@@ -579,7 +616,7 @@ private fun currentChapterLabel(book: Book, index: Int, total: Int): String {
  * iOS navigates and they read at a glance.
  */
 @Composable
-private fun EpubChapterBar(
+internal fun EpubChapterBar(
     chapterIndex: Int,
     totalChapters: Int,
     label: String,
@@ -617,7 +654,7 @@ private fun EpubChapterBar(
  * `BookPlayerBar.compactProgressLabel` parity. "Preparing…" while the
  * engine renders, "Paused" when a session exists but nothing is sounding.
  */
-private fun compactProgressLabel(progress: Double?, isGenerating: Boolean): String = when {
+internal fun compactProgressLabel(progress: Double?, isGenerating: Boolean): String = when {
     isGenerating -> "Preparing…"
     progress != null -> "${(progress * 100).toInt()}%"
     else -> "Paused"
@@ -629,7 +666,7 @@ private fun compactProgressLabel(progress: Double?, isGenerating: Boolean): Stri
  * instead of a static Play icon that silently re-narrated the chapter.
  */
 @Composable
-private fun EpubReaderBottomBar(
+internal fun EpubReaderBottomBar(
     vm: SpeechnotesViewModel,
     book: Book,
     currentChapter: Int,
@@ -717,8 +754,11 @@ private fun EpubReaderBottomBar(
  */
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun ReaderAppearanceSheet(
+internal fun ReaderAppearanceSheet(
     appearance: com.speechnotes.app.model.ReaderAppearance,
+    /** The doc reader is scrolled-only: the Page-view switch and the
+     *  paginated page-turn rows do not apply there. */
+    showPagination: Boolean = true,
     onDismiss: () -> Unit,
     onTheme: (String) -> Unit,
     onFontSize: (Int) -> Unit,
@@ -755,30 +795,41 @@ private fun ReaderAppearanceSheet(
             }
 
             Spacer(Modifier.height(16.dp))
-            Text("Page view", style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(4.dp))
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                SegmentedButton(
-                    selected = !appearance.flowIsPaginated,
-                    onClick = { onFlow("scrolled") },
-                    shape = SegmentedButtonDefaults.itemShape(0, 2),
-                    label = { Text("Scroll") },
+            if (showPagination) {
+                Text("Page view", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(4.dp))
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    SegmentedButton(
+                        selected = !appearance.flowIsPaginated,
+                        onClick = { onFlow("scrolled") },
+                        shape = SegmentedButtonDefaults.itemShape(0, 2),
+                        label = { Text("Scroll") },
+                    )
+                    SegmentedButton(
+                        selected = appearance.flowIsPaginated,
+                        onClick = { onFlow("paginated") },
+                        shape = SegmentedButtonDefaults.itemShape(1, 2),
+                        label = { Text("Pages") },
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            } else {
+                Text("Page view", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Scroll — these books read in one continuous page.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                SegmentedButton(
-                    selected = appearance.flowIsPaginated,
-                    onClick = { onFlow("paginated") },
-                    shape = SegmentedButtonDefaults.itemShape(1, 2),
-                    label = { Text("Pages") },
-                )
+                Spacer(Modifier.height(8.dp))
             }
-            Spacer(Modifier.height(8.dp))
             SwitchRow(
                 label = "Auto-scroll",
                 checked = appearance.autoScroll,
-                enabled = !appearance.flowIsPaginated,
+                enabled = showPagination && !appearance.flowIsPaginated || !showPagination,
                 onChange = onAutoScroll,
             )
-            if (appearance.autoScroll && !appearance.flowIsPaginated) {
+            if (appearance.autoScroll && (!showPagination || !appearance.flowIsPaginated)) {
                 SliderRow(
                     label = "Speed · ${appearance.autoScrollSpeed.toInt()} px/s",
                     value = appearance.autoScrollSpeed.toFloat(),
@@ -788,47 +839,51 @@ private fun ReaderAppearanceSheet(
                 )
             }
             Text(
-                if (appearance.flowIsPaginated) {
-                    "Auto-scroll works in Scroll mode."
-                } else {
-                    "Auto-scroll turns the pages for you and advances to the next chapter at the bottom."
+                when {
+                    !showPagination ->
+                        "Auto-scroll turns the pages for you and advances to the next chapter at the bottom."
+                    appearance.flowIsPaginated -> "Auto-scroll works in Scroll mode."
+                    else ->
+                        "Auto-scroll turns the pages for you and advances to the next chapter at the bottom."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            Spacer(Modifier.height(16.dp))
-            Text("Page turning", style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.height(4.dp))
-            SwitchRow(
-                label = "Tap page edges to turn",
-                checked = appearance.tapTurn,
-                enabled = appearance.flowIsPaginated,
-                onChange = onTapTurn,
-            )
-            if (appearance.tapTurn && appearance.flowIsPaginated) {
+            if (showPagination) {
+                Spacer(Modifier.height(16.dp))
+                Text("Page turning", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(4.dp))
                 SwitchRow(
-                    label = "Swap left and right",
-                    checked = appearance.tapInverted,
-                    enabled = true,
-                    onChange = onTapInverted,
+                    label = "Tap page edges to turn",
+                    checked = appearance.tapTurn,
+                    enabled = appearance.flowIsPaginated,
+                    onChange = onTapTurn,
+                )
+                if (appearance.tapTurn && appearance.flowIsPaginated) {
+                    SwitchRow(
+                        label = "Swap left and right",
+                        checked = appearance.tapInverted,
+                        enabled = true,
+                        onChange = onTapInverted,
+                    )
+                }
+                SwitchRow(
+                    label = "Swipe to turn",
+                    checked = appearance.swipeTurn,
+                    enabled = appearance.flowIsPaginated,
+                    onChange = onSwipeTurn,
+                )
+                Text(
+                    if (appearance.flowIsPaginated) {
+                        "Tap the left or right third of the page to turn it; the middle toggles the bars. Scroll mode turns pages by swiping."
+                    } else {
+                        "Tap zones and page-turn swipes apply in Pages mode."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            SwitchRow(
-                label = "Swipe to turn",
-                checked = appearance.swipeTurn,
-                enabled = appearance.flowIsPaginated,
-                onChange = onSwipeTurn,
-            )
-            Text(
-                if (appearance.flowIsPaginated) {
-                    "Tap the left or right third of the page to turn it; the middle toggles the bars. Scroll mode turns pages by swiping."
-                } else {
-                    "Tap zones and page-turn swipes apply in Pages mode."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
             Spacer(Modifier.height(16.dp))
             Text("Typography", style = MaterialTheme.typography.titleSmall)
@@ -911,7 +966,7 @@ private fun ReaderAppearanceSheet(
 }
 
 @Composable
-private fun SwitchRow(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+internal fun SwitchRow(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -922,7 +977,7 @@ private fun SwitchRow(label: String, checked: Boolean, enabled: Boolean, onChang
 }
 
 @Composable
-private fun SliderRow(
+internal fun SliderRow(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,

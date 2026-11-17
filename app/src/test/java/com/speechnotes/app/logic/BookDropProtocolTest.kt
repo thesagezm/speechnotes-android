@@ -137,11 +137,14 @@ class BookDropProtocolTest {
 
     @Test
     fun prepare_upload_rejects_formats_the_importer_cannot_land() {
+        // mobi/rtf/html ARE landable now (the BookDoc readers); the
+        // genuinely unlandable set is the unplayable audio containers and
+        // unknown extensions.
         val c = core()
         val filesJson = listOf(
-            "m" to "story.mobi",
-            "r" to "doc.rtf",
-            "x" to "page.html",
+            "m" to "song.opus",
+            "r" to "audio.ogg",
+            "x" to "voice.oga",
             "k" to "book.kindle",
         ).joinToString(",") { (id, name) ->
             "\"$id\":{\"id\":\"$id\",\"fileName\":\"$name\",\"size\":5,\"sha256\":null}"
@@ -160,7 +163,7 @@ class BookDropProtocolTest {
         val filesJson = listOf(
             "n" to "note.md",
             "w" to "recording.wav",
-            "m" to "story.mobi",
+            "m" to "song.opus",
         ).joinToString(",") { (id, name) ->
             "\"$id\":{\"id\":\"$id\",\"fileName\":\"$name\",\"size\":5,\"sha256\":null}"
         }
@@ -388,18 +391,21 @@ class BookDropProtocolTest {
         //
         // iOS v1.8.1 routing parity added three families back: a WAV lands
         // in Exports, and markdown/plain text lands as a NOTE (the book
-        // importer would flatten it to a one-chapter EPUB).
+        // importer would flatten it to a one-chapter EPUB). The headless doc
+        // formats (mobi/azw3/fb2/rtf/html) land natively now — the BookDoc
+        // readers — so they are accepted too.
         for (ext in listOf(
             "epub", "pdf", "m4b", "m4a", "mp4", "mp3", "jex",
             "docx", "odt", "pptx", "odp",
             "wav",
             "md", "markdown", "txt", "text",
+            "mobi", "azw", "azw3", "prc", "pdb", "fb2", "rtf", "html", "htm", "htmlz",
         )) {
             assertTrue(ext, BookDropCore.acceptedExtensions.contains(ext))
         }
         // No importer on Android for these — refused at prepare-upload
         // instead of accepted and then failing to import.
-        for (ext in setOf("mobi", "azw3", "fb2", "rtf", "html", "opus", "ogg", "oga")) {
+        for (ext in setOf("opus", "ogg", "oga")) {
             assertTrue("$ext has no importer on Android", !BookDropCore.acceptedExtensions.contains(ext))
         }
         assertTrue(!BookDropCore.acceptedExtensions.contains("exe"))
