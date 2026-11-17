@@ -194,11 +194,13 @@ object RenderAheadBankPolicy {
      * sized to outlast the expected render (last render + 1 s margin), so
      * every dry-bank resume carried ~1 s of dead air after the chunk was
      * already synthesized — the "slight delay before the next chunk
-     * resumes" report. The bridge now feeds ROLLING slices instead (the
-     * StreamingPlaybackCore feeder): the sink never drains (the frozen-head
+     * resumes" report. The bridge now feeds ROLLING slices instead
+     * (StreamingPlaybackCore's writer dry branch — the writer re-checks the
+     * bank every loop round): the sink never drains (the frozen-head
      * pathology stays fixed) while the dead air is bounded by one slice.
      * 0.2 s still outlives the producer's wakeup plus a queue hop, and its
-     * re-arm check runs every 10 ms while the producer is still working.
+     * re-arm check runs every writer round (≤ 50 ms) while the producer is
+     * still working.
      */
     const val BRIDGE_SLICE_SECONDS: Double = 0.2
 

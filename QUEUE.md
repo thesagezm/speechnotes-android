@@ -68,6 +68,22 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
+0. **2026-11-15 — PHONON CHUNK-GAP DIAGNOSIS (user): "please diagnose that
+   audible break between two chunks/sentences and recommend fixes"** —
+   ADDRESSED as **Unit G2** (see In Flight): root cause was structural — the
+   producer could not START render(N+1) until it had pushed ALL of chunk N
+   into the 32 KB AudioTrack FIFO (0.68 s), so every render began with
+   0.68 s of runway → dead air = render − 0.68 s ≈ 4–5 s per boundary; the
+   30 s render-ahead bank was unreachable (bankedSeconds() capped by the
+   FIFO) and GO1's bridge never armed (admission always saw a full FIFO).
+   G2 gives the pipeline a real bank + writer thread. Code-complete,
+   274/274 green, APK built; the audible verdict is the user's (they are
+   testing on their own hardware — no Waydroid pass this session).
+   Remaining from the same session's log: the EPUB reader JS storm
+   (`RangeError: Maximum call stack size exceeded` ×~50 in 0.4 s at
+   index-android.html:52 — infinite recursion in reader.js; also inflates
+   RTF 0.5 → 0.93 via CPU contention, which lengthens every gap) — its own
+   unit, queued.
 0. **2026-11-15 — PDF READER LANDSCAPE (user): "Big GUI bug on mobile — in
    landscape mode the viewing space for pdfs is severely reduced … the page
    slider is not necessary there … that TOC should be in the same row as the
@@ -261,6 +277,113 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-11-15 — Unit G3: the sentence-gap tightening pass (chunk silence
+  trim) — CODE-COMPLETE (282/282 green, both split APKs rebuilt); DEVICE
+  VERDICT = the user's (their phone).** User verdict on G2 (phone,
+  arm64): Phonon TTS "doing significantly better almost perfect … just
+  needs to reduce the gap between sentences/chunks a bit more". Their log
+  CONFIRMS G2 works — Phonon held 6→36 s banked ahead, `bridge=off` on
+  every chunk, the hold-gate engaging at the 30 s target, zero dry-bank
+  events — so the remaining gap is NOT the pipeline: it lives INSIDE the
+  PCM. Every chunk starts from a fresh model state and runs to EOS, so
+  each chunk carries the model's own lead-in + trail-off silence (Phonon's
+  EOS countdown keeps a whole 80 ms frame past the crossing — see
+  ChunkBoundaryFades), which stacks onto the sentence pause.
+  - **New pure `speech/ChunkSilenceTrim.kt`** — trims both ends down to
+    natural pads: samples below 0.004 amplitude (≈ −48 dBFS — room tone
+    and EOS tail-off, never consonants at −40..−35 dB) are cut, always
+    LEAVING 120 ms of tail pad and 40 ms of head pad beyond the last/first
+    audible sample, so a word's decay is never clipped and the
+    inter-sentence gap lands near ~160 ms. An entirely-silent chunk is
+    returned untouched (never a zero-frame array — synthesis anomalies
+    belong to the failed-chunk path); the input array is never mutated;
+    nothing to trim returns the SAME array. **Recorded divergence: iOS
+    (head 1c2a6ad, after cf501b2) has no PCM trim — SpeechSanitizer is
+    text-only; this pass is Android-first per the user's device report.**
+  - **Wired at BOTH chunk sinks** — the playback producer and exportWav,
+    trim THEN fades (the fades ride the trimmed edges), all after the
+    wall-clock read so RTF stays inference-only and `audio=` now reflects
+    the audio actually delivered. The timeline line (playback) and export
+    line carry a `trim=%.2fs (head %.2f / tail %.2f)` stat whenever the
+    pass took anything off — the numbers to read next session to see how
+    much silence the model was actually leaving. ChunkTimeline's API
+    unchanged (5 pins intact); the stat is an appended fragment.
+  - **8 new ChunkSilenceTrimTest JVM pins** (pad arithmetic, above/below-
+    threshold tail, all-silent untouched, input immutability, degenerate
+    rate/chunk, short-chunk pad clamp, custom pads). `testDebugUnitTest`
+    → **282 tests / 0 failures / 0 errors** (274 prior + 8 new);
+    `-Psplits=true assembleDebug` → fresh `app-arm64-v8a-debug.apk`
+    (82.4 MB, the user's phone build — ChunkSilenceTrim confirmed in
+    classes12.dex) + `app-x86_64-debug.apk` (89.3 MB, Waydroid).
+  - If the user wants the pause tighter/looser after hearing it: the two
+    dials are `DEFAULT_TAIL_PAD_SECONDS` (0.12) and
+    `DEFAULT_HEAD_PAD_SECONDS` (0.04) in ChunkSilenceTrim — one-constant
+    retune, no rework.
+- **2026-11-15 — Unit G2: the REAL render-ahead bank + writer thread —
+  CODE-COMPLETE (274/274 green, x86_64 APK built); DEVICE PASS = the
+  user's own hardware test.** The chunk-gap diagnosis (User Feedback
+  Pending, top item) landed as a rewrite of the streaming core's
+  scheduling half — shared by ALL streaming engines (Phonon/Kokoro/
+  Supertonic), exactly like GO1:
+  - **New `speech/PcmBank.kt` (pure, JVM-tested)** — the bounded FIFO of
+    rendered chunks between synthesis and the AudioTrack. The producer
+    appends a rendered chunk and immediately renders the next one
+    (`bankChunk`); a per-session WRITER THREAD (`writerLoop`) drains the
+    bank into the track segment by segment. Rendering now OVERLAPS
+    playback instead of trailing it — the serialization that produced
+    `render − 0.68 s` dead air at every sentence boundary is gone by
+    construction. Capacity = bank target + 30 s slack (~2.9 MB at 24 kHz);
+    R8's 32 KB HAL cap STAYS (the depth moved to Java heap, where the
+    render-ahead policy always meant it to live — iOS's ring-buffer shape).
+  - **`bankedSeconds()` = bank + FIFO** — the 30 s nominal target is
+    reachable for the first time; the hold-gate actually engages and the
+    producer banks ~30 s ahead, then paces.
+  - **GO1's bridge is finally REACHABLE**: it moved INTO the writer as the
+    dry branch (`bridgeTick`) — bank empty + chunks still coming + FIFO
+    nearly dry → feed one 0.2 s silence slice, re-checked every writer
+    round (≤ 50 ms). The old admission-time arming never fired (at
+    admission the FIFO was always ~full → `bridge=off` on every timeline
+    line while the air was dead). No separate feeder thread, no join, no
+    interleave hazard; the "keepalive bridge ended" log fires when real
+    audio resumes.
+  - **ChunkSchedule stamps at bank admission**, not write time — the old
+    stamp made wait = write(0) + render(1) (structurally ALWAYS "second
+    buffer LATE", ratcheting to a 30 s target the 180-char ceiling can
+    never deliver). Honest wait ≈ render(1) only; the schedule settles.
+  - **Fixes riding the same unit:** (1) progress/played-chars/SPEAKING now
+    fire when a segment's FIRST bytes enter the FIFO — the read-along
+    highlight advances with the sounding sentence instead of a full chunk
+    late (behavior change, recorded); (2) the last-chunk-render-FAILED
+    path registers the completion poller via new producer-side
+    `totalPlannedFrames` — the old code hung at SPEAKING there; (3) all
+    track writes are runCatching-guarded (a stop() releasing the track
+    mid-write could kill the generate-queue runnable); (4) a dead-sink
+    guard on the writer's full-FIFO spin (the producer parks in the bank
+    valve by then, so the writer owns that escape); (5) setSampleRate
+    drains the bank (old-rate banked audio would play at the wrong pitch).
+  - **Deleted:** `schedule()`, `bridgeIfDry`, `bridgeFeederBody`,
+    `stopBridgeFeeder`, `writeRemainder`, the feeder fields — the
+    producer's blocked write loop is the whole bug class, gone.
+  - **9 new PcmBank JVM tests** (FIFO order, payload, depth, empty-bank
+    wait/wake, capacity backpressure, cancellation, drain) — one taught a
+    real lesson: `Object.wait(0)` waits FOREVER, so `PcmBank.take`
+    explicitly treats a non-positive wait as no-wait. `testDebugUnitTest`
+    → **274 tests / 0 failures / 0 errors** (265 prior + 9 new).
+  - **Evidence:** BUILD SUCCESSFUL testDebugUnitTest (274/0/0 from the
+    JUnit XML) + `-Psplits=true assembleDebug` → fresh
+    `app-x86_64-debug.apk` (89.3 MB; PcmBank confirmed in classes12.dex).
+    **BUILD-INVOCATION CORRECTION for everyone:** `assembleDebugX86_64`
+    does NOT exist in this AGP setup (tasks list has no per-ABI
+    assembles even with `-Psplits=true`) — the per-ABI APKs are produced
+    by **`./gradlew -Psplits=true assembleDebug`**, which emits
+    `app-x86_64-debug.apk` + `app-arm64-v8a-debug.apk` directly (the
+    arm64 one is what the user tests on their phone). AGENTS.md
+    documents the old name (frozen — proposing the change here instead).
+  - **Device pass:** none this session by instruction — the user tests on
+    their own hardware. What to look for: chunk timeline lines with
+    `banked=` after-figures well above 0.7 s (the bank working),
+    `bridge=on` only during genuinely slow renders, no "second buffer was
+    LATE" ratchet, and above all NO dead air between sentences.
 - **2026-11-15 — Unit PDF-L2: SCROLL MODE for the PDF reader —
   CODE-COMPLETE (265/265 green, x86_64 APK built); DEVICE PASS PENDING.**
   User request: "add scroll mode to speechnotes-android for pdf files". iOS
@@ -872,6 +995,41 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Session Handover
 
+- **2026-11-15 HANDOVER (Unit G3 — chunk silence trim; user tests on their
+  phone).** G3 rides on G2 (both in the tree, uncommitted — push waits for
+  the user's audible verdict): **282/282 JVM green**, fresh
+  `app-arm64-v8a-debug.apk` (82.4 MB, 04:56 — the user's phone build) +
+  `app-x86_64-debug.apk`, built with `./gradlew -Psplits=true
+  assembleDebug`. G2 was device-CONFIRMED by the user ("significantly
+  better almost perfect"); G3 trims the model's own lead-in/EOS trail-off
+  silence per chunk (120 ms tail pad + 40 ms head pad, −48 dBFS threshold)
+  — the remaining perceived sentence gap. If the user wants it tighter or
+  looser, retune `DEFAULT_TAIL_PAD_SECONDS`/`DEFAULT_HEAD_PAD_SECONDS` in
+  ChunkSilenceTrim (one-constant change); the per-chunk `trim=` stat on
+  the timeline line shows how much the model was actually leaving.
+  If a gap STILL remains after G3, read the timeline lines: `banked=`
+  after-figures ~0.7 s would mean a bank/writer regression; rtf > 1 means
+  inference-bound physics (Supertonic measured RTF 2.4–4.3 on the user's
+  phone this session — that one is physics, the 0e XNNPACK item owns it).
+  Next queued unit regardless: the EPUB reader JS recursion storm
+  (index-android.html:52, RangeError flood, EPUB-F1-era code).
+- **2026-11-15 HANDOVER (Unit G2 — the real render-ahead bank + writer
+  thread; user tests on their own hardware).** G2 is code-complete on
+  main's tree: **274/274 JVM green** (265 prior + 9 new PcmBank tests),
+  fresh `app-x86_64-debug.apk` (89.3 MB) built with
+  **`./gradlew -Psplits=true assembleDebug`** (the `assembleDebugX86_64`
+  task name in AGENTS.md does not exist in this AGP setup — see the G2
+  In-Flight entry's build-invocation correction). The user was told the
+  APK path and tests themselves — NO Waydroid pass from the agent this
+  session. Nothing was committed (push waits for the user's audible
+  verdict per the "git push after verify" rule). If the user still hears
+  breaks, read the per-chunk timeline lines first: `banked=` after-figures
+  stuck at ~0.7 s would mean the bank isn't filling (writer thread
+  wedged — check for a `-writer` thread / errors), `bridge=on` on
+  non-dry banks would mean the tick mis-fires, and rtf > 1 lines mean
+  inference-bound physics (CPU contention — check the EPUB JS storm).
+  Next queued unit regardless: the EPUB reader JS recursion storm
+  (index-android.html:52, RangeError flood, EPUB-F1-era code).
 - **2026-11-15 HANDOVER (Unit PDF-L2 — scroll mode; PDF-L1, GO1 + EPUB-F1
   device passes still pending).** PDF-L2 is code-complete, 265/265 green,
   x86_64 debug APK built (89 MB). **ALL FOUR device passes wait on the SAME
