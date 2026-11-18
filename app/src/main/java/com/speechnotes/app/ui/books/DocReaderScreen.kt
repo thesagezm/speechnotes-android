@@ -104,6 +104,12 @@ internal fun DocReader(
     val nowPlayingBookId by vm.player.nowPlayingBookId.collectAsState()
     val narratingThis = nowPlayingBookId == book.id && playState.isActive
     val context = LocalContext.current
+    // Unit RAL-1: the read-along swap's inputs (all observed — the overlay
+    // must appear the moment the session's text lands).
+    val readAlongOn by vm.readAlongEnabledFlow.collectAsState()
+    val activeSpeechText by vm.player.activeSpeechText.collectAsState()
+    val readAlongRange by vm.player.readAlongRange.collectAsState()
+    val showReadAlong = readAlongOn && narratingThis && activeSpeechText != null
     var currentChapter by remember(book.id) { mutableStateOf(book.position - 1) }
     // The doc's chapter total is known at import (the manifest IS the parse's
     // own order) — no spine discovery delay like the epub reader's.
@@ -314,6 +320,20 @@ internal fun DocReader(
                     },
                     modifier = Modifier.fillMaxSize(),
                 )
+                // Unit RAL-1 (iOS BookReaderView readerSurface parity): while
+                // THIS book speaks with read-along on, the native read-along
+                // view covers the WebView — the exact spoken text with the
+                // sounding sentence highlighted and kept centered. The
+                // WebView stays composed underneath (destroying it would
+                // reload the whole shell on exit).
+                if (showReadAlong) {
+                    com.speechnotes.app.ui.readalong.ReadAlongScreen(
+                        vm = vm,
+                        text = activeSpeechText ?: "",
+                        range = readAlongRange,
+                        onExit = { vm.readAlongEnabled = false },
+                    )
+                }
             }
             if (landscape) {
                 com.speechnotes.app.ui.playback.PlaybackRail(

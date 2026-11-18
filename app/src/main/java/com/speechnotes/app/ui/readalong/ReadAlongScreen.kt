@@ -1,5 +1,6 @@
 package com.speechnotes.app.ui.readalong
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -24,10 +25,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -65,20 +71,33 @@ fun ReadAlongScreen(
     }
     val scrollState = rememberScrollState()
     val state by vm.player.state.collectAsState()
-    // Auto-scroll: keep the sounding paragraph near the top.
+    // Measured center-anchor auto-scroll (Unit RAL-1a, iOS ReadAlongView's
+    // proxy.scrollTo(id, anchor: .center) parity). The old estimate —
+    // paragraph index × a fixed 56 dp — undershot tall paragraphs, so the
+    // sounding sentence landed below the viewport ("far at the bottom").
+    // Each row reports its content-space geometry; on every sentence change
+    // the containing paragraph is animated to the viewport CENTER.
+    val geometry = remember(text) { mutableMapOf<Int, Pair<Int, Int>>() } // start → (top, height)
+    var viewportHeight by remember { mutableStateOf(0) }
     LaunchedEffect(range?.first) {
         val r = range ?: return@LaunchedEffect
-        val target = paragraphs.indexOfFirst { (start, line) ->
+        // The sentence starts INSIDE a paragraph — find the containing one
+        // (sentences are not paragraph boundaries).
+        val containing = paragraphs.lastOrNull { (start, line) ->
             r.first >= start && r.first < start + line.length + 1
+        } ?: return@LaunchedEffect
+        if (containing.first == paragraphs.firstOrNull()?.first) {
+            return@LaunchedEffect // iOS skips the first paragraph too
         }
-        if (target > 0) {
-            // Approximate paragraph height (text + spacing) — good enough to
-            // keep the highlight in view for a reader.
-            val approxLine = 28
-            scrollState.animateScrollTo((target * approxLine * 2).coerceIn(0, scrollState.maxValue))
-        }
+        val (top, height) = geometry[containing.first] ?: return@LaunchedEffect
+        if (viewportHeight <= 0) return@LaunchedEffect
+        val target = (top + height / 2 - viewportHeight / 2).coerceIn(0, scrollState.maxValue)
+        scrollState.animateScrollTo(target)
     }
-    Column(Modifier.fillMaxSize()) {
+    // Opaque background (iOS ReadAlongView's .background(systemBackground/black)
+    // parity): over a book reader the surface covers the page — without it the
+    // book's own text showed through and collided with the read-along rows.
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -118,6 +137,7 @@ fun ReadAlongScreen(
             Modifier
                 .weight(1f)
                 .verticalScroll(scrollState)
+                .onSizeChanged { viewportHeight = it.height }
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy((12 * themeState.readerBlockSpacing).dp),
@@ -135,10 +155,15 @@ fun ReadAlongScreen(
                     // restarts the CURRENT session's text sentence-snapped at
                     // this paragraph, keeping the note/book identity — the
                     // book's auto-advance chain stays armed.
-                    modifier = Modifier.clickable {
-                        Haptics.tap(context)
-                        vm.player.playFromCurrent(start)
-                    },
+                    modifier = Modifier
+                        .onGloballyPositioned { coords ->
+                            geometry[start] =
+                                coords.positionInParent().y.toInt() to coords.size.height
+                        }
+                        .clickable {
+                            Haptics.tap(context)
+                            vm.player.playFromCurrent(start)
+                        },
                 )
             }
         }

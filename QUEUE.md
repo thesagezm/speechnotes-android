@@ -303,6 +303,56 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-11-18 — Unit RAL-1: read-along follows the read text — CODE-COMPLETE
+  (424/424 green, both split APKs built); device-verified for the surface
+  swap + early-chapter follow, ONE OPEN ITEM for the next session (the
+  deep-chapter follow).** User feedback (see User Feedback Pending). Two
+  parts, both against the iOS reference (`ReadAlongView.swift`,
+  `BookReaderView.swift:357-390`):
+  - **RAL-1a — measured center-anchor auto-scroll in ReadAlongScreen.**
+    The old estimate (paragraph index × fixed 56 dp) undershot tall
+    paragraphs → the sounding sentence landed below the viewport ("far at
+    the bottom"). Each row now reports its content-space geometry
+    (`onGloballyPositioned` → `positionInParent` into a map) and on every
+    sentence change the CONTAINING paragraph (sentences start mid-paragraph
+    — the old code's own containment search is kept) animates to the
+    viewport center (`top + height/2 − viewport/2`, clamped) — iOS
+    `proxy.scrollTo(id, anchor: .center)` parity, first-paragraph skip
+    included. Also gave the surface an opaque background
+    (`colorScheme.surface`, iOS systemBackground/black parity) — over a
+    book reader the page text otherwise showed through and collided with
+    the rows (found on device).
+  - **RAL-1b — the book readers swap to the read-along surface while the
+    book narrates (iOS readerSurface parity).** EPUB, DOC and PDF readers
+    overlay `ReadAlongScreen` when `readAlongEnabled && narratingThis &&
+    activeSpeechText != null`; the WebView/page stays composed UNDERNEATH
+    (removing it would destroy + reload the rendition on exit — iOS keeps
+    its WKWebView alive for the same reason). Exit turns the pref off and
+    returns to the book; speech continues. Divergence recorded: Android's
+    read-along surface carries the Pause/Stop/Exit header row (it is the
+    note editor's only transport too — one surface for both); iOS's rows
+    are bare. The book rails still have no read-along toggle (P1-11) — the
+    global pref + Exit cover it for now.
+  - **Device evidence (Waydroid, landscape, Phonon):** open Think Faster
+    EPUB → rail Play → GENERATING → SPEAKING (logcat chunk lines, rtf
+    0.22–0.34) → the native read-along surface appears over the page with
+    the sounding sentence highlighted (epigraph: "—Mark Twain"; after a
+    Contents jump to chapter 8 the highlight advanced paragraph by
+    paragraph — screenshots sn-ral-r1/sn-step5/sn-step6). Bank full at 30 s
+    and holding (chunk 49/229, G2 healthy). **OPEN ITEM:** ~70 s into the
+    long chapter (chunk 46+, highlight deep in the text) the view had NOT
+    scrolled off the chapter top (scrollTop still 0, highlight below the
+    fold) — the center-follow engaged in the first screenful but the
+    deep-chapter case did not visibly scroll in the captured round. Next
+    session: repro = narrate chapter 8/29 of the Think Faster EPUB past
+    chunk ~10 and screenshot; suspect list = the overlay's
+    `LaunchedEffect(range?.first)` never re-firing past the first screenful
+    (state/key subtlety), or `onPlayedChars`/`engineSpeechOffset` mapping
+    putting the range outside the geometry map (range → null at depth).
+    Everything else about the unit is verified.
+  - Commits: this entry lands with the RAL-1 commit (QUEUE.md same-commit
+    rule).
+
 - **2026-11-18 — Unit CHROME-1: the reader title bar joins the immersive
   chrome — DONE (424/424 green, both split APKs built, Waydroid-verified
   hide+restore on the EPUB and PDF readers in landscape).** User feedback

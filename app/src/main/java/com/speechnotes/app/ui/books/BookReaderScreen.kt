@@ -256,6 +256,17 @@ private fun EpubReader(
     val playState by vm.player.state.collectAsState()
     val nowPlayingBookId by vm.player.nowPlayingBookId.collectAsState()
     val narratingThis = nowPlayingBookId == book.id && playState.isActive
+    // Unit RAL-1 (iOS BookReaderView readerSurface parity): while THIS book
+    // speaks with read-along on, the book surface is covered by the native
+    // read-along view — the exact spoken text with the sounding sentence
+    // highlighted and kept centered. The WebView stays composed UNDERNEATH:
+    // removing it from composition would destroy and reload the whole
+    // rendition on exit (iOS deliberately keeps its WKWebView alive for the
+    // same reason).
+    val readAlongOn by vm.readAlongEnabledFlow.collectAsState()
+    val activeSpeechText by vm.player.activeSpeechText.collectAsState()
+    val readAlongRange by vm.player.readAlongRange.collectAsState()
+    val showReadAlong = readAlongOn && narratingThis && activeSpeechText != null
     var showVoicePicker by remember { mutableStateOf(false) }
     // Fallback TOC (label + href) from epub.js, used only when the manifest
     // has no saved toc rows.
@@ -478,6 +489,14 @@ private fun EpubReader(
                     }
                 },
                     modifier = Modifier.fillMaxSize(),
+                )
+            }
+            if (showReadAlong) {
+                com.speechnotes.app.ui.readalong.ReadAlongScreen(
+                    vm = vm,
+                    text = activeSpeechText ?: "",
+                    range = readAlongRange,
+                    onExit = { vm.readAlongEnabled = false },
                 )
             }
         }
@@ -1048,6 +1067,13 @@ private fun PdfReader(
     val playState by vm.player.state.collectAsState()
     val nowPlayingBookId by vm.player.nowPlayingBookId.collectAsState()
     val narratingThis = nowPlayingBookId == book.id && playState.isActive
+    // Unit RAL-1 (iOS BookPDFReaderView's ReadAlongView swap parity): the
+    // native read-along view covers the page while THIS book speaks with
+    // read-along on. Same WebView-preservation reasoning as the EPUB reader.
+    val readAlongOn by vm.readAlongEnabledFlow.collectAsState()
+    val activeSpeechText by vm.player.activeSpeechText.collectAsState()
+    val readAlongRange by vm.player.readAlongRange.collectAsState()
+    val showReadAlong = readAlongOn && narratingThis && activeSpeechText != null
     // Landscape is the iOS round-6 layout: the bottom band is GONE — it
     // covered the page it named — and the trailing rail is the one place
     // playback and page stepping live (the rail's own
@@ -1400,6 +1426,22 @@ private fun PdfReader(
         }
     }
 
+    // The page surface + the read-along overlay (Unit RAL-1): one identity
+    // for both orientation branches, exactly like pdfSurface itself.
+    val pdfSurfaceWithReadAlong: @Composable () -> Unit = {
+        Box(Modifier.fillMaxSize()) {
+            pdfSurface()
+            if (showReadAlong) {
+                com.speechnotes.app.ui.readalong.ReadAlongScreen(
+                    vm = vm,
+                    text = activeSpeechText ?: "",
+                    range = readAlongRange,
+                    onExit = { vm.readAlongEnabled = false },
+                )
+            }
+        }
+    }
+
     Row(Modifier.fillMaxSize()) {
         if (landscape) {
             // iOS BookPDFReaderView round 6: "the bottom page-number band is
@@ -1416,10 +1458,10 @@ private fun PdfReader(
             // gesture, so this rail is the only page stepper in landscape),
             // and it shows for chapter-less PDFs too (iOS gates the branch
             // on hasChapters) — it is their only play affordance.
-            Box(Modifier.weight(1f)) { pdfSurface() }
+            Box(Modifier.weight(1f)) { pdfSurfaceWithReadAlong() }
         } else {
             Column(Modifier.fillMaxSize().weight(1f)) {
-                Box(Modifier.weight(1f)) { pdfSurface() }
+                Box(Modifier.weight(1f)) { pdfSurfaceWithReadAlong() }
                 // Two rows on purpose. Everything shared one row before —
                 // prev, page label, a weighted Slider, play, next — and at
                 // 360 dp the fixed 48 dp icon buttons plus the label left
