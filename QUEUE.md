@@ -8,6 +8,19 @@ Waydroid adb IP is read from `waydroid status` each session.
 
 ## Current Phase
 
+**2026-11-19 — NANO EDGE TTS IS IN.** nano-edge-tts (drmhse's distilled
+Kokoro decoder behind Kokoro's own text side, ~157 MB, Apache-2.0) is the
+app's 6th engine — forked from speechnotes-linux `sn-tts/src/nano_edge.rs`
++ its manager.rs catalog entry in units NANO-1/NANO-2 on branch
+`nano-edge-tts` (off `book-formats`). **Waydroid-verified end-to-end:
+download (31 files) → both graphs load on ORT-Android 1.30.0 → GENERATING
+→ SPEAKING (91 tokens → 5.7 s audio in 1.48 s, rtf 0.29) → natural finish
+→ WAV export (rtf 0.05 warm, 242 KB on disk = 5.12 s × 24 kHz × 2 bytes
+exactly).** Audible confirmation is the user's on real hardware. The unit
+also fixed a REAL downloader bug the pass exposed: ModelManager's
+readTimeout(0) let a stalled CDN connection hang a download forever — now
+60 s per-read, converting stalls into resumable retries.
+
 **2026-11-11 — PHONON TTS IS IN.** The Gradium Phonon 31M engine (English
 streaming, ~192 MB, Apache-2.0) is the app's 5th engine — ported from
 speechnotes-iOS's WORKING prefill-once contract (`PhononEngine.swift` @
@@ -68,6 +81,14 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
+0. **2026-11-18/19 — NANO EDGE TTS (user): "implement nano-edge-tts as part
+   of the speech engines… fork/copy extensively from speechnotes-linux (not
+   [linux-]rust)".** ADDRESSED as **Units NANO-1 + NANO-2** (see In Flight):
+   the engine, its catalog entry and its UI are ports of
+   `speechnotes-linux/crates/sn-tts/src/nano_edge.rs` + manager.rs; the
+   Android platform differences (MisakiG2P instead of espeak, voices.npz vs
+   per-voice .bin for the Kokoro sibling, ORT-Java tensors) are recorded
+   in NanoEdgeEngine.kt/NanoEdgeText.kt doc comments.
 0. **2026-11-18 — READER TITLE BAR NEVER HIDES (user): "make it able to
    disappear the way the chapter bar manages to disappear when I tap the
    screen and reappear when I tap back… right now it persists in both the
@@ -303,33 +324,89 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
-- **2026-11-18 — Unit NANO-1: the nano-edge-tts model plumbing + settings UI
-  — DONE (424/424 green), on branch `nano-edge-tts` (off `book-formats`).**
-  User ask: "implement nano-edge-tts as part of the speech engines… fork/copy
-  extensively from speechnotes-linux (not [linux-]rust)". Source of truth:
-  `speechnotes-linux/crates/sn-tts/src/nano_edge.rs` + its manager.rs
-  catalog entry. nano-edge-tts = Kokoro-82M's text side with its 53.3M
-  waveform decoder replaced by drmhse's distilled 1.75M harmonic-plus-noise
-  decoder — the app's 6th engine, same 28 English voices as Kokoro, 24 kHz.
-  NANO-1 lands the plumbing (engine selectable/downloadable/configurable;
-  playback routes to the system voice until NANO-2 wires NanoEdgeEngine —
-  P2's Phonon pattern): EngineKind.NANO_EDGE (picker last = Linux
-  available_engines order), AppFiles NanoEdge dirs, ModelFiles.nanoEdge
-  (text-side.onnx 110 MB floor + nano-decoder.onnx 30 MB floor from
-  `thesagezm/speechnotes-models/nano-edge-tts`, kokoro's tokenizer.json +
-  the 28 voice banks from the Kokoro repo at their published paths — every
-  URL verified live with curl; banks gated min=max 522,240 bytes so a
-  truncated transfer never counts as complete), ModelManager state flow +
-  delete-guard (NanoEdge owns its directory outright), Prefs.nanoEdgeVoice,
-  SpeechSettingsScreen rows, VoicePickerSheet branch, SpeechPlayer voice/
-  recents/description/audition wiring. **BONUS BUG FIX: VoiceCatalog's
-  `am_fenfir` → `am_fenrir`** — iOS fixed the same typo
-  (ModelManager.swift:33-34 documents it); on Android the wrong name matched
-  no npz member (Kokoro silently spoke the first sorted voice instead of
-  Fenrir) and would 404 nano's Fenrir bank download. Kotlin trap recorded:
-  block comments NEST — a KDoc containing `voices/*.bin` opened a nested
-  comment that swallowed the rest of AppFiles.kt (compile caught it).
-  Next: NANO-2, the engine itself + JVM tests.
+- **2026-11-19 — Units NANO-1 + NANO-2: nano-edge-tts, the app's 6th engine
+  — DONE, Waydroid-verified end-to-end (440/440 green, both split APKs
+  built), on branch `nano-edge-tts` (off `book-formats`, 2 commits).**
+  User ask (see User Feedback Pending): "implement nano-edge-tts as part of
+  the speech engines… fork/copy extensively from speechnotes-linux (not
+  [linux-]rust)". Source of truth:
+  `speechnotes-linux/crates/sn-tts/src/nano_edge.rs` + manager.rs's
+  `nano-edge-tts` ModelSet. nano-edge-tts = Kokoro-82M's text side
+  (`text-side.onnx`, ~112 MB) with its 53.3M waveform decoder replaced by
+  drmhse's distilled 1.75M harmonic-plus-noise decoder
+  (`nano-decoder.onnx`, ~30 MB) — same 28 English Kokoro voices, same
+  tokenizer, 24 kHz; the BOS/EOS wrap lives inside the text-side graph so
+  the ids fed are the same unwrapped stream Kokoro gets. Linux puts
+  nano-edge-tts LAST in the speech picker — Android's EngineKind order
+  mirrors that.
+  - **NANO-1 (plumbing, commit `71ee84b`):** EngineKind.NANO_EDGE;
+    AppFiles NanoEdge/NanoEdge/voices dirs; ModelFiles.nanoEdge (both
+    graphs from `thesagezm/speechnotes-models/nano-edge-tts`, kokoro's own
+    tokenizer.json + the 28 voice banks from the Kokoro repo at their
+    published paths — every URL verified live with curl; banks gated
+    min=max 522,240 bytes so a truncated transfer never counts as
+    complete, Phonon voice-bin precedent); ModelManager state flow +
+    delete-guard (NanoEdge owns its directory outright); Prefs
+    .nanoEdgeVoice; SpeechSettingsScreen rows; VoicePickerSheet branch;
+    SpeechPlayer voice/recents/description/audition wiring. **Bonus bug
+    fix: VoiceCatalog `am_fenfir` → `am_fenrir`** (iOS fixed the same
+    typo, ModelManager.swift:33-34; on Android the wrong name matched no
+    npz member — Kokoro silently spoke the first sorted voice instead of
+    Fenrir — and would have 404'd nano's Fenrir bank download; the set's
+    clean 31-file download proves the fix on device).
+  - **NANO-2 (engine, this commit):** `speech/NanoEdgeText.kt` — the pure
+    text math (voice-bank validation, style-row offset, terminal-pause
+    symbol, tokenize: unknown phonemes → space id never deletion, hyphen/
+    apostrophe cleaning, token cap 510) ported from kokoro.rs's
+    `tokenize_for_kokoro_family`; **16 new NanoEdgeTextTest JVM pins**
+    (bank shape, endianness, style clamp, substitution, pause
+    re-attach/dedupe/skip, range errors, constants). The tests caught one
+    real port bug pre-device: the terminal-pause push overflowed the
+    token array (fixed: +1 slot). Recorded divergence from Linux, in the
+    code: Android's MisakiG2P passes `.;:!?` through (espeak drops
+    punctuation), so the pause is appended only when the token stream
+    does not already end with that id — an unpunctuated end still takes
+    the "…" long-pause prosody. `speech/NanoEdgeEngine.kt` — the two-graph
+    shell on the shared StreamingPlaybackCore (kokoro's chunk caps +
+    schedule seed verbatim — the text side IS kokoro's), Linux's
+    MAX_FRAMES 16384 F0-axis guard, f0/n frame agreement check, style row
+    = clamp(phonemeChars−1, 0, rows−1)×256 (Linux formula; Kokoro engine
+    keys on token count — nano follows its own reference), only the
+    CURRENT voice's 522 KB bank resident (the Linux design, vs Kokoro's
+    whole-npz). SpeechPlayer: nano() singleton, resolve/unload/idle-unload/
+    setVoice/export/shutdown wiring.
+  - **Downloader stall fix (the device pass exposed it):** ModelManager
+    readTimeout(0) → 60 s. A zombie CDN connection (TCP alive, no bytes)
+    parked the first download attempt FOREVER — ~28 min with the progress
+    bar up and ~190 B/s on the interface; retry/resume only fires on an
+    IOException and a silent stall never throws. OkHttp's readTimeout is
+    PER READ (gap between bytes), not a file total, so 60 s cannot kill a
+    healthy multi-hundred-MB transfer; it converts a stall into a
+    SocketTimeoutException the per-file retry + Range resume already
+    recovers. Force-stop + re-tap Download then completed the set.
+  - **Device evidence (Waydroid, landscape, logcat pid 7924):**
+    `engine = nanoEdge (fallback=false)`; download: 31 files (2 graphs +
+    tokenizer + 28 banks); `NanoEdgeEngine: 115 vocab entries, 2 graphs
+    ready in 3553 ms`; `91 tokens → 5.7s audio in 1.48s`; `chunk 0/1:
+    chars=84 audio=5.12s render=1.48s rtf=0.29 banked=0.0→5.1s bridge=off
+    track=new trim=0.61s`; AudioTrack ready rate=24000; `GENERATING →
+    SPEAKING` → natural `→ IDLE` (schedule settled: 16.41 chars/audio-s,
+    next opener 132); export: `export 1/1: chars=84 audio=5.12s render=0.28s
+    rtf=0.05 trim=0.60s`, file on disk **242 KB · 18 Nov, 22:55** (=
+    5.12 s × 24 kHz × 2 bytes exactly). Voice chip read "Heart · American ·
+    female" (af_heart, the shared Kokoro bank). Audible confirmation is
+    the user's on real hardware (Waydroid audio-HAL caveat).
+  - **Device state left:** Nano Edge selected + downloaded + Ready; one
+    scratch test note now carries the sentence "Hello from nano edge, the
+    sixth engine…"; Render markdown pref was flipped OFF during the pass
+    (it had trapped the editor in preview — the known P0-1).
+  - AGENTS.md divergence note (frozen file — proposing here, not editing):
+    the "four engines" engine contract is now SIX (Phonon joined in the
+    phonon-tts wave; Nano Edge now). The contract's callback/state
+    semantics are untouched and preserved by the new engine.
+  - Commits: NANO-1 `71ee84b`, NANO-2 + QUEUE.md this commit. Next:
+    `book-formats` device pass is still the pending gate for its merge;
+    this branch rebases/merges cleanly after it.
 
 - **2026-11-18 — Unit RAL-1 CLOSE-OUT: the deep-chapter center-follow — DONE
   (Waydroid-verified end-to-end; 424/424 green; both split APKs built).**
@@ -1344,6 +1421,17 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Session Handover
 
+- **2026-11-19 HANDOVER (Units NANO-1 + NANO-2 — nano-edge-tts in, device
+  pass DONE).** The unit is committed on branch `nano-edge-tts` (off
+  `book-formats`; do NOT merge before `book-formats` itself clears its
+  device pass + user confirmation). 440/440 green, both split APKs built,
+  x86_64 installed on Waydroid and verified end-to-end (evidence in the
+  In-Flight entry). Device left: Nano Edge selected + downloaded (Ready),
+  one scratch note holds the test sentence, Render markdown pref OFF, adb
+  to 192.168.240.112:5555 was authorized the whole session (no manual tap
+  needed). Open threads elsewhere, unchanged: the BOOK-F1 device pass (one
+  adb tap + corpus recipe in the BOOK-F1 In-Flight entry), G2/G3's audible
+  verdict (user's phone), 0e/0f.
 - **2026-11-18 HANDOVER (Unit RAL-1 CLOSE-OUT — both read-along follow bugs
   fixed and device-verified).** The unit is committed on `book-formats`
   (see the RAL-1 CLOSE-OUT In-Flight entry for the two root causes and the

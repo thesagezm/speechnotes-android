@@ -125,6 +125,7 @@ class SpeechPlayer(
     private var kokoroEngine: KokoroEngine? = null
     private var supertonicEngine: SupertonicEngine? = null
     private var phononEngine: PhononEngine? = null
+    private var nanoEdgeEngine: NanoEdgeEngine? = null
 
     /**
      * The engine of the CURRENT selection — null until one is actually
@@ -243,6 +244,7 @@ class SpeechPlayer(
             runCatching { (previous as? KokoroEngine)?.unloadModel() }
             runCatching { (previous as? SupertonicEngine)?.unloadModel() }
             runCatching { (previous as? PhononEngine)?.unloadModel() }
+            runCatching { (previous as? NanoEdgeEngine)?.unloadModel() }
         }
         // When a neural engine is selected but its model isn't downloaded, the
         // system engine is the ACTIVE engine — so playback still works and the
@@ -278,9 +280,8 @@ class SpeechPlayer(
                 if (usingSystemFallback) system() else phonon()
             EngineKind.SUPERTONIC ->
                 if (usingSystemFallback) system() else supertonic()
-            // NANO-2 lands NanoEdgeEngine here; until then a valid nano
-            // selection still routes to the system voice.
-            EngineKind.NANO_EDGE -> system()
+            EngineKind.NANO_EDGE ->
+                if (usingSystemFallback) system() else nanoEdge()
         }
         engine.speed = _rateMultiplier.value.toFloat()
         activeEngine = engine
@@ -311,6 +312,14 @@ class SpeechPlayer(
             phononEngine = it
         }.also {
             it.voice = _phononVoice.value
+        }
+
+    private fun nanoEdge(): SpeechEngine =
+        nanoEdgeEngine ?: NanoEdgeEngine().also {
+            observe(it)
+            nanoEdgeEngine = it
+        }.also {
+            it.voice = _nanoEdgeVoice.value
         }
 
     private fun kokoroEngineFor(kind: EngineKind): KokoroEngine {
@@ -394,6 +403,7 @@ class SpeechPlayer(
             runCatching { kokoroEngine?.unloadModel() }
             runCatching { supertonicEngine?.unloadModel() }
             runCatching { phononEngine?.unloadModel() }
+            runCatching { nanoEdgeEngine?.unloadModel() }
         }
     }
 
@@ -494,6 +504,7 @@ class SpeechPlayer(
         rememberRecentVoice(engine, codename)
         if (kindUsesKokoro(engine)) kokoroEngine?.voice = codename
         if (engine == EngineKind.PHONON) phononEngine?.voice = codename
+        if (engine == EngineKind.NANO_EDGE) nanoEdgeEngine?.voice = codename
         if (engine == EngineKind.SUPERTONIC) supertonicEngine?.voice = codename
     }
 
@@ -1103,6 +1114,18 @@ class SpeechPlayer(
                     }
                 })
             }
+            is NanoEdgeEngine -> scope.launch {
+                engine.core.exportWav(cleaned, output, { p ->
+                    _exportState.value = ExportState.Running(p)
+                }, { file ->
+                    if (file != null) {
+                        _shareFile.value = file
+                        _exportState.value = ExportState.Idle
+                    } else {
+                        _exportState.value = ExportState.Failed("Export produced no audio.")
+                    }
+                })
+            }
             else -> _exportState.value = ExportState.Failed("The system voice can't export audio — pick a neural engine.")
         }
     }
@@ -1126,5 +1149,6 @@ class SpeechPlayer(
         kokoroEngine?.shutdown()
         supertonicEngine?.shutdown()
         phononEngine?.shutdown()
+        nanoEdgeEngine?.shutdown()
     }
 }

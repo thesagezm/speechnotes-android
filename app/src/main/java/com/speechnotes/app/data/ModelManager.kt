@@ -38,15 +38,24 @@ sealed class DownloadState {
  */
 class ModelManager(private val context: Context) {
 
-    // Model files are hundreds of MB. Two failure modes drove these numbers:
+    // Model files are hundreds of MB. Three failure modes drove these numbers:
     //  - the platform's 10 s read timeout kills long transfers outright;
     //  - huggingface's CDN resets the socket mid-stream on multi-hundred-MB
-    //    files (the first device round died with a bare "Connection reset").
-    // A long callTimeout plus per-file retry/resume is the fix; without it
-    // every engine reported "download failed" and looked like a dead button.
+    //    files (the first device round died with a bare "Connection reset");
+    //  - a silently stalled connection: readTimeout(0) (the original "no
+    //    timeout" choice) lets a zombie CDN connection park the download
+    //    FOREVER — the retry/resume machinery below only fires on an
+    //    IOException, and a connection that keeps TCP alive but delivers no
+    //    bytes never throws (device-proven 2026-11-19 on the nano-edge set:
+    //    ~28 min with the progress bar up and ~190 B/s on the interface).
+    //    OkHttp's readTimeout is PER READ — the max gap between bytes, not a
+    //    file total — so 60 s does not threaten a healthy multi-hundred-MB
+    //    transfer (256 KB chunks at >4 KB/s clear it trivially); it converts
+    //    a stall into a SocketTimeoutException, which the per-file retry +
+    //    Range resume below already knows how to recover.
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)   // no read timeout
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .writeTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
         .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)   // no overall timeout
         .retryOnConnectionFailure(true)
