@@ -51,6 +51,7 @@ fun VoicePickerSheet(vm: SpeechnotesViewModel, onDismiss: () -> Unit) {
     val activeVoiceFlow = when (engine) {
         EngineKind.SUPERTONIC -> vm.player.supertonicVoice
         EngineKind.PHONON -> vm.player.phononVoice
+        EngineKind.NANO_EDGE -> vm.player.nanoEdgeVoice
         else -> vm.player.voice
     }
     val activeVoice by activeVoiceFlow.collectAsState()
@@ -97,6 +98,7 @@ fun VoicePickerSheet(vm: SpeechnotesViewModel, onDismiss: () -> Unit) {
                     EngineKind.SUPERTONIC -> "Supertonic voice"
                     EngineKind.KOKORO_SMALL -> "Kokoro voice (small model)"
                     EngineKind.PHONON -> "Phonon voice"
+                    EngineKind.NANO_EDGE -> "Nano Edge voice"
                     else -> "Kokoro voice"
                 },
                 style = MaterialTheme.typography.titleLarge,

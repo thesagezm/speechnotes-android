@@ -22,18 +22,24 @@ data class VoiceDescriptor(
 
 object VoiceCatalog {
 
-    /** The 28 Kokoro voices, in the official voice-bank order. */
+    /**
+     * The 28 Kokoro voices, in the official voice-bank order. `am_fenrir`
+     * is the shipped name (iOS ModelManager.swift:33-34 documents the fix:
+     * the earlier `am_fenfir` spelling matched no member of any voice set —
+     * with nano-edge downloading banks by filename it would 404 the Fenrir
+     * download outright, and on Kokoro it silently fell back to the first
+     * sorted npz voice).
+     */
     val kokoroVoices: List<String> = listOf(
         "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica",
         "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
-        "am_adam", "am_echo", "am_eric", "am_fenfir", "am_liam",
+        "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
         "am_michael", "am_onyx", "am_puck", "am_santa",
         "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
         "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
     )
 
     private val irregularNames = mapOf(
-        "am_fenfir" to "Fenrir",
         "bf_lily" to "Lily",
         "bm_fable" to "Fable",
     )
@@ -127,7 +133,9 @@ object VoiceCatalog {
         "Hi, I'm $name. The quick brown fox jumps over the lazy dog — and I run fully offline, right on this phone."
 
     /** Descriptors for an engine: kokoro for kokoro/kokoroSmall, phonon for
-     *  phonon, supertonic for supertonic. */
+     *  phonon, supertonic for supertonic, the kokoro bank again for
+     *  nanoEdge (the distilled decoder speaks the same voices —
+     *  "one voice code is one speaker in both engines", sn-tts nano_edge.rs). */
     fun descriptors(engine: String): List<VoiceDescriptor> = when (engine) {
         "supertonic" -> supertonic
         "phonon" -> phonon

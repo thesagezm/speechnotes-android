@@ -33,6 +33,15 @@ object ModelFiles {
     private const val phononBaseURL =
         "https://huggingface.co/onnx-community/phonon-31m-en-ONNX/resolve/main"
 
+    // nano-edge-tts: the two graphs ride in the project's model repo (the
+    // ONNX export of drmhse's distilled Kokoro decoder — the published
+    // weights are PyTorch); tokenizer + voice banks are kokoro's own files
+    // fetched from kokoro's repo, exactly as sn-tts manager.rs wires them.
+    private const val nanoEdgeBaseURL =
+        "https://huggingface.co/thesagezm/speechnotes-models/resolve/main/nano-edge-tts"
+    private const val kokoroBaseURL =
+        "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main"
+
     // MARK: Kokoro (fp32 + uint8 share the graph)
 
     val kokoro: ModelSet = ModelSet(
@@ -166,11 +175,48 @@ object ModelFiles {
         },
     )
 
+    /**
+     * nano-edge-tts (speechnotes-linux sn-tts manager.rs parity): Kokoro's
+     * text side (`text-side.onnx`, ~112 MB) with the 53.3M waveform decoder
+     * replaced by drmhse's distilled 1.75M harmonic-plus-noise decoder
+     * (`nano-decoder.onnx`, ~30 MB — the exporter's external-data blob
+     * inlined into the one file), plus kokoro's own tokenizer.json and the
+     * 28 English voice banks the distilled decoder was trained on (af_/am_/
+     * bf_/bm_ — kokoro's `af.bin` aggregate row is not a voice and is
+     * excluded, other languages run but are untested, so they are not
+     * offered). The banks are the same published files at the same remote
+     * paths as kokoro's set, fetched from kokoro's repo; each is exactly
+     * 522,240 bytes (510 rows × 256 × f32), so the gate is min=max — a
+     * truncated transfer can never count as complete (Phonon voice-bin
+     * gating precedent).
+     */
+    val nanoEdge: ModelSet = ModelSet(
+        engine = EngineKind.NANO_EDGE,
+        directory = AppFiles.nanoEdgeDir,
+        files = buildList {
+            add(Entry("text-side.onnx", "$nanoEdgeBaseURL/text-side.onnx", 110_000_000L))
+            add(Entry("nano-decoder.onnx", "$nanoEdgeBaseURL/nano-decoder.onnx", 30_000_000L))
+            // Kokoro's own tokenizer.json — the same file the Kokoro tiers
+            // download into their directory; the nano set carries its own
+            // copy so the sets install independently (Linux set parity).
+            add(Entry("tokenizer.json", "$kokoroBaseURL/tokenizer.json", 3_000L))
+            for (voice in VoiceCatalog.kokoroVoices) {
+                add(Entry(
+                    "voices/$voice.bin",
+                    "$kokoroBaseURL/voices/$voice.bin",
+                    522_240L,
+                    maxBytes = 522_240L,
+                ))
+            }
+        },
+    )
+
     fun setFor(engine: EngineKind): ModelSet? = when (engine) {
         EngineKind.KOKORO -> kokoro
         EngineKind.KOKORO_SMALL -> kokoroSmall
         EngineKind.PHONON -> phonon
         EngineKind.SUPERTONIC -> supertonic
+        EngineKind.NANO_EDGE -> nanoEdge
         EngineKind.SYSTEM -> null
     }
 

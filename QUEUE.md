@@ -303,6 +303,34 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-11-18 — Unit NANO-1: the nano-edge-tts model plumbing + settings UI
+  — DONE (424/424 green), on branch `nano-edge-tts` (off `book-formats`).**
+  User ask: "implement nano-edge-tts as part of the speech engines… fork/copy
+  extensively from speechnotes-linux (not [linux-]rust)". Source of truth:
+  `speechnotes-linux/crates/sn-tts/src/nano_edge.rs` + its manager.rs
+  catalog entry. nano-edge-tts = Kokoro-82M's text side with its 53.3M
+  waveform decoder replaced by drmhse's distilled 1.75M harmonic-plus-noise
+  decoder — the app's 6th engine, same 28 English voices as Kokoro, 24 kHz.
+  NANO-1 lands the plumbing (engine selectable/downloadable/configurable;
+  playback routes to the system voice until NANO-2 wires NanoEdgeEngine —
+  P2's Phonon pattern): EngineKind.NANO_EDGE (picker last = Linux
+  available_engines order), AppFiles NanoEdge dirs, ModelFiles.nanoEdge
+  (text-side.onnx 110 MB floor + nano-decoder.onnx 30 MB floor from
+  `thesagezm/speechnotes-models/nano-edge-tts`, kokoro's tokenizer.json +
+  the 28 voice banks from the Kokoro repo at their published paths — every
+  URL verified live with curl; banks gated min=max 522,240 bytes so a
+  truncated transfer never counts as complete), ModelManager state flow +
+  delete-guard (NanoEdge owns its directory outright), Prefs.nanoEdgeVoice,
+  SpeechSettingsScreen rows, VoicePickerSheet branch, SpeechPlayer voice/
+  recents/description/audition wiring. **BONUS BUG FIX: VoiceCatalog's
+  `am_fenfir` → `am_fenrir`** — iOS fixed the same typo
+  (ModelManager.swift:33-34 documents it); on Android the wrong name matched
+  no npz member (Kokoro silently spoke the first sorted voice instead of
+  Fenrir) and would 404 nano's Fenrir bank download. Kotlin trap recorded:
+  block comments NEST — a KDoc containing `voices/*.bin` opened a nested
+  comment that swallowed the rest of AppFiles.kt (compile caught it).
+  Next: NANO-2, the engine itself + JVM tests.
+
 - **2026-11-18 — Unit RAL-1 CLOSE-OUT: the deep-chapter center-follow — DONE
   (Waydroid-verified end-to-end; 424/424 green; both split APKs built).**
   The RAL-1 open item ("no scroll past the first screenful") had TWO root

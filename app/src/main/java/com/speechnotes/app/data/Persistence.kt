@@ -66,6 +66,10 @@ object Prefs {
     const val ENGINE_KIND = "engineKind"
     const val VOICE = "voice"
     const val PHONON_VOICE = "phononVoice"
+    // Android-only key today (iOS has no nano engine yet); id space is the
+    // Kokoro codenames, stored under its own key so the two engines keep
+    // independent voice picks (Phonon key precedent).
+    const val NANO_EDGE_VOICE = "nanoEdgeVoice"
     const val SUPERTONIC_VOICE = "supertonicVoice"
     const val SUPERTONIC_LANG = "supertonicLang"
     const val SUPERTONIC_QUALITY = "supertonicRenderQuality"

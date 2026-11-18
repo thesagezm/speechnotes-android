@@ -57,12 +57,14 @@ fun SpeechSettingsScreen(vm: SpeechnotesViewModel, onBack: () -> Unit) {
         val kokoroSmallState by vm.models.kokoroSmallState.collectAsState()
         val supertonicState by vm.models.supertonicState.collectAsState()
         val phononState by vm.models.phononState.collectAsState()
+        val nanoEdgeState by vm.models.nanoEdgeState.collectAsState()
         val readyNow = { kind: EngineKind ->
             when (kind) {
                 EngineKind.KOKORO -> kokoroState is DownloadState.Ready
                 EngineKind.KOKORO_SMALL -> kokoroSmallState is DownloadState.Ready
                 EngineKind.SUPERTONIC -> supertonicState is DownloadState.Ready
                 EngineKind.PHONON -> phononState is DownloadState.Ready
+                EngineKind.NANO_EDGE -> nanoEdgeState is DownloadState.Ready
                 EngineKind.SYSTEM -> true
             }
         }
@@ -114,10 +116,12 @@ private fun VoiceRow(vm: SpeechnotesViewModel, engine: EngineKind) {
     var showPicker by remember { mutableStateOf(false) }
     val kokoroVoice by vm.player.voice.collectAsState()
     val phononVoice by vm.player.phononVoice.collectAsState()
+    val nanoEdgeVoice by vm.player.nanoEdgeVoice.collectAsState()
     val supertonicVoice by vm.player.supertonicVoice.collectAsState()
     val activeVoice = when (engine) {
         EngineKind.SUPERTONIC -> supertonicVoice
         EngineKind.PHONON -> phononVoice
+        EngineKind.NANO_EDGE -> nanoEdgeVoice
         else -> kokoroVoice
     }
     ListItem(
@@ -329,6 +333,7 @@ private fun ModelDownloadRow(vm: SpeechnotesViewModel, engine: EngineKind) {
         EngineKind.KOKORO_SMALL -> vm.models.kokoroSmallState
         EngineKind.SUPERTONIC -> vm.models.supertonicState
         EngineKind.PHONON -> vm.models.phononState
+        EngineKind.NANO_EDGE -> vm.models.nanoEdgeState
         else -> return
     }
     val state by stateFlow.collectAsState()

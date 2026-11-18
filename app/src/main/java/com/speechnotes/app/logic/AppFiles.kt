@@ -28,6 +28,8 @@ object AppFiles {
         phononDir.mkdirs()
         phononOnnxDir.mkdirs()
         phononVoicesDir.mkdirs()
+        nanoEdgeDir.mkdirs()
+        nanoEdgeVoicesDir.mkdirs()
     }
 
     val notesImagesDir: File get() = File(root, "note-images")
@@ -45,6 +47,13 @@ object AppFiles {
     val phononDir: File get() = File(root, "Phonon")
     val phononOnnxDir: File get() = File(root, "Phonon/onnx")
     val phononVoicesDir: File get() = File(root, "Phonon/voices")
+    /**
+     * nano-edge-tts (drmhse's distilled Kokoro decoder) — speechnotes-linux
+     * parity: one directory for the two graphs + tokenizer, voices/ beside
+     * them (sn-tts manager.rs dir "nano-edge-tts", layout voices/<voice>.bin).
+     */
+    val nanoEdgeDir: File get() = File(root, "NanoEdge")
+    val nanoEdgeVoicesDir: File get() = File(root, "NanoEdge/voices")
 
     fun notesFile() = File(root, "notes.json")
     fun notesBackupFile() = File(root, "notes.backup.json")

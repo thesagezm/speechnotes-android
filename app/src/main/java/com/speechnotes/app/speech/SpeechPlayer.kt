@@ -52,6 +52,11 @@ class SpeechPlayer(
     private val _phononVoice = MutableStateFlow("default")
     val phononVoice: StateFlow<String> = _phononVoice.asStateFlow()
 
+    /** The nano-edge voice — a Kokoro codename, kept under its own key so
+     *  the two engines hold independent picks (Phonon key precedent). */
+    private val _nanoEdgeVoice = MutableStateFlow("af_heart")
+    val nanoEdgeVoice: StateFlow<String> = _nanoEdgeVoice.asStateFlow()
+
     private val _supertonicVoice = MutableStateFlow("M1")
     val supertonicVoice: StateFlow<String> = _supertonicVoice.asStateFlow()
 
@@ -166,6 +171,7 @@ class SpeechPlayer(
         _engineKind.value = EngineKind.fromKey(prefs.getString(Prefs.ENGINE_KIND, "system") ?: "system")
         _voice.value = prefs.getString(Prefs.VOICE, "am_eric") ?: "am_eric"
         _phononVoice.value = prefs.getString(Prefs.PHONON_VOICE, "default") ?: "default"
+        _nanoEdgeVoice.value = prefs.getString(Prefs.NANO_EDGE_VOICE, "af_heart") ?: "af_heart"
         _supertonicVoice.value = prefs.getString(Prefs.SUPERTONIC_VOICE, "M1") ?: "M1"
         _supertonicLang.value = prefs.getString(Prefs.SUPERTONIC_LANG, "en") ?: "en"
         _supertonicQuality.value = prefs.getString(Prefs.SUPERTONIC_QUALITY, "high") ?: "high"
@@ -240,13 +246,13 @@ class SpeechPlayer(
         }
         // When a neural engine is selected but its model isn't downloaded, the
         // system engine is the ACTIVE engine — so playback still works and the
-        // voice description says so. PHONON falls back unconditionally until
-        // Unit P3 lands the PhononEngine (configuration-only until then).
+        // voice description says so.
         usingSystemFallback = when (kind) {
             EngineKind.SYSTEM -> false
             EngineKind.KOKORO, EngineKind.KOKORO_SMALL -> !ModelFiles.isValid(kind)
             EngineKind.PHONON -> !ModelFiles.isValid(EngineKind.PHONON)
             EngineKind.SUPERTONIC -> !ModelFiles.isValid(EngineKind.SUPERTONIC)
+            EngineKind.NANO_EDGE -> !ModelFiles.isValid(EngineKind.NANO_EDGE)
         }
         LogStore.info(
             "SpeechPlayer: engine = ${kind.key} (fallback=$usingSystemFallback, loaded on demand)"
@@ -272,6 +278,9 @@ class SpeechPlayer(
                 if (usingSystemFallback) system() else phonon()
             EngineKind.SUPERTONIC ->
                 if (usingSystemFallback) system() else supertonic()
+            // NANO-2 lands NanoEdgeEngine here; until then a valid nano
+            // selection still routes to the system voice.
+            EngineKind.NANO_EDGE -> system()
         }
         engine.speed = _rateMultiplier.value.toFloat()
         activeEngine = engine
@@ -472,11 +481,13 @@ class SpeechPlayer(
         when (engine) {
             EngineKind.SUPERTONIC -> _supertonicVoice.value = codename
             EngineKind.PHONON -> _phononVoice.value = codename
+            EngineKind.NANO_EDGE -> _nanoEdgeVoice.value = codename
             else -> _voice.value = codename
         }
         val key = when (engine) {
             EngineKind.SUPERTONIC -> Prefs.SUPERTONIC_VOICE
             EngineKind.PHONON -> Prefs.PHONON_VOICE
+            EngineKind.NANO_EDGE -> Prefs.NANO_EDGE_VOICE
             else -> Prefs.VOICE
         }
         Prefs.prefs(context).edit().putString(key, codename).apply()
@@ -496,6 +507,7 @@ class SpeechPlayer(
             EngineKind.SUPERTONIC -> "recentSupertonicVoices"
             EngineKind.KOKORO_SMALL -> "recentKokoroSmallVoices"
             EngineKind.PHONON -> "recentPhononVoices"
+            EngineKind.NANO_EDGE -> "recentNanoEdgeVoices"
             else -> "recentKokoroVoices"
         }
         val prefs = Prefs.prefs(context)
@@ -514,6 +526,7 @@ class SpeechPlayer(
             EngineKind.SUPERTONIC -> "recentSupertonicVoices"
             EngineKind.KOKORO_SMALL -> "recentKokoroSmallVoices"
             EngineKind.PHONON -> "recentPhononVoices"
+            EngineKind.NANO_EDGE -> "recentNanoEdgeVoices"
             else -> "recentKokoroVoices"
         }
         return Prefs.prefs(context).getStringSet(key, emptySet()).orEmpty().toList()
@@ -945,6 +958,7 @@ class SpeechPlayer(
         val savedVoice = when (engine) {
             EngineKind.SUPERTONIC -> _supertonicVoice.value
             EngineKind.PHONON -> _phononVoice.value
+            EngineKind.NANO_EDGE -> _nanoEdgeVoice.value
             else -> _voice.value
         }
         setVoice(voiceCodename, engine)
@@ -1001,6 +1015,9 @@ class SpeechPlayer(
             EngineKind.PHONON ->
                 if (usingSystemFallback) "System voice (model missing)"
                 else VoiceCatalog.subtitle(_phononVoice.value, "phonon")
+            EngineKind.NANO_EDGE ->
+                if (usingSystemFallback) "System voice (model missing)"
+                else VoiceCatalog.subtitle(_nanoEdgeVoice.value, "nanoEdge")
             EngineKind.SUPERTONIC ->
                 if (usingSystemFallback) "System voice (model missing)"
                 else VoiceCatalog.subtitle(_supertonicVoice.value, "supertonic")

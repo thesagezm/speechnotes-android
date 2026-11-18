@@ -54,7 +54,12 @@ enum class EngineKind(val key: String, val label: String) {
     KOKORO_SMALL("kokoroSmall", "Kokoro — small · int8 (~92 MB)"),
     KOKORO("kokoroOnnx", "Kokoro — on-device neural, 28 voices"),
     PHONON("phonon", "Phonon — small · English (~192 MB)"),
-    SUPERTONIC("supertonic", "Supertonic — best quality, multilingual");
+    SUPERTONIC("supertonic", "Supertonic — best quality, multilingual"),
+    // speechnotes-linux picker parity: nano-edge-tts rides LAST there too
+    // (sn-tts manager.rs available_engines). Kokoro's text side with its
+    // 53.3M waveform decoder replaced by drmhse's distilled 1.75M
+    // harmonic-plus-noise decoder — same 28 English voices, 24 kHz.
+    NANO_EDGE("nanoEdge", "Nano Edge — Kokoro voices, distilled (~157 MB)");
 
     val isNeural: Boolean get() = this != SYSTEM
 
