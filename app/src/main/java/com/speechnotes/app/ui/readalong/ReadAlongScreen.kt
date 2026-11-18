@@ -136,8 +136,15 @@ fun ReadAlongScreen(
         Column(
             Modifier
                 .weight(1f)
-                .verticalScroll(scrollState)
+                // The viewport size must be read BEFORE verticalScroll: a
+                // scroll node's content is measured with unbounded height, so
+                // an onSizeChanged placed after it reports the FULL CONTENT
+                // height (14,280 px on the repro) as the "viewport" — every
+                // centering target then computed negative and coerced to 0,
+                // and the follow never scrolled past the first screenful
+                // (RAL-1 open item, device-proven 2026-11-18).
                 .onSizeChanged { viewportHeight = it.height }
+                .verticalScroll(scrollState)
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy((12 * themeState.readerBlockSpacing).dp),

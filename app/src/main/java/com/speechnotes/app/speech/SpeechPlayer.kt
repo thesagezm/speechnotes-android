@@ -637,16 +637,22 @@ class SpeechPlayer(
         title: String,
         startCharOffset: Int = 0,
     ) {
-        val actualText = if (startCharOffset > 0 && startCharOffset < text.length) {
-            text.substring(startCharOffset)
-        } else text
+        // The FULL chapter text goes to speak() with the offset as
+        // baseOffset — speak() indexes its read-along pieces and
+        // activeSpeechText against the text AS PASSED, so pre-substringing
+        // here desynced the tables: pieces were suffix-local while
+        // fullChar = baseOffset + engineCharsDone was full-text, and the
+        // highlight led the sound by exactly baseOffset chars (device-proven
+        // 2026-11-18: chapter 8 resumed at char 2778, highlight showed the
+        // sentence 2778 chars ahead). The bookmark path already did this
+        // right; the "start where I am" path now matches it.
         speak(
-            actualText,
+            text,
             noteId = null,
             bookId = bookId,
             chapterIndex = chapterIndex,
             title = title,
-            baseOffset = if (startCharOffset > 0) startCharOffset else 0,
+            baseOffset = startCharOffset.coerceAtLeast(0),
             honorBookmark = startCharOffset <= 0,
         )
     }
@@ -767,15 +773,17 @@ class SpeechPlayer(
         val pieces = SentenceChunker.sentencePieces(cleaned)
         beginReadAlong(cleaned, pieces)
 
-        // Resume bookmark: sentence-snapped restart when the text is unchanged.
-        // A forced baseOffset (reader-initiated play from the visible spot)
-        // overrides the bookmark — that offset IS the resume point the user
-        // is looking at.
+        // Speech starts at a full-text char offset: a forced baseOffset
+        // (reader-initiated play from the visible spot — sentence-snapped by
+        // resolveStartOffset) or the sentence-snapped resume bookmark.
+        // BOTH paths index the text AS PASSED (the same string the read-along
+        // surface displays): pieces/activeSpeechText are full-text, the
+        // engine speaks the suffix, engineSpeechOffset is the full-text
+        // start — the contract playFrom() already follows.
         val resumeOffset = if (honorBookmark) bookmarkOffset(noteId, bookId, chapterIndex, cleaned) else 0
-        val toSpeak = if (baseOffset > 0) {
-            cleaned
-        } else if (resumeOffset > 0 && resumeOffset < cleaned.length) cleaned.substring(resumeOffset) else cleaned
-        engineSpeechOffset = baseOffset + if (baseOffset > 0) 0 else resumeOffset
+        val start = if (baseOffset > 0) baseOffset.coerceAtMost(cleaned.length) else resumeOffset
+        val toSpeak = if (start > 0 && start < cleaned.length) cleaned.substring(start) else cleaned
+        engineSpeechOffset = start
 
         // Publish GENERATING *synchronously*, before handing off to the
         // engine. Every engine reaches GENERING asynchronously (Kokoro and

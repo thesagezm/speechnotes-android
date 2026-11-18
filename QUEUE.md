@@ -303,12 +303,75 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## In Flight / Last Push
 
+- **2026-11-18 — Unit RAL-1 CLOSE-OUT: the deep-chapter center-follow — DONE
+  (Waydroid-verified end-to-end; 424/424 green; both split APKs built).**
+  The RAL-1 open item ("no scroll past the first screenful") had TWO root
+  causes, both located with a temporary branch-aware instrumentation pass
+  (`RAL:` logcat lines logging every early-return branch + post-scroll
+  state) and both fixed:
+  - **(1) The read-along "viewport height" was the CONTENT height.**
+    `ReadAlongScreen` measured the viewport with `onSizeChanged` placed
+    AFTER `verticalScroll` in the modifier chain — a scroll node's content
+    is measured with unbounded height, so the callback reported the FULL
+    CONTENT height (device: vh=14280 vs the real viewport 695, max=13585).
+    Every centering target (top + h/2 − vh/2) was therefore hugely
+    negative, coerced to 0, and `animateScrollTo(0)` actively scrolled the
+    view BACK to the top on every sentence change (device-proven: a manual
+    swipe to s=648 was erased to s=0 by the next sentence's effect) — the
+    highlight below the fold, scrollTop pinned at 0, forever. Fix: the
+    `onSizeChanged` moved BEFORE `verticalScroll` (bounded size = viewport).
+    The row geometry itself was verified correct as-is (content-space:
+    `positionInParent` inside a scroll column does not move with the
+    scroll — para tops stayed monotone in text order across differing
+    scroll offsets).
+  - **(2) The "start where I am" path desynced the read-along tables.**
+    `SpeechPlayer.playBookChapter` pre-substringed the chapter
+    (`actualText = text.substring(startCharOffset)`) AND passed
+    `baseOffset = startCharOffset` — while `speak()` built its sentence
+    pieces / activeSpeechText from the ALREADY-substring'd suffix, so
+    fullChar = baseOffset + engineCharsDone (a full-text offset) was
+    matched against a SUFFIX-local pieces table and the highlight LED THE
+    SOUND by exactly baseOffset chars (device-proven: chapter 8 resumed at
+    char 2778 and the very first highlight line showed r.first=2778 — the
+    sentence 2778 chars ahead — with the read-along surface starting
+    mid-chapter instead of at the chapter title). This is the reader-Play
+    path whenever the book's saved scroll fraction is non-zero (the
+    DEFAULT rail-Play path), and it also persisted bookmarks under the
+    suffix hash with a full-text offset — a resume that could never match.
+    Fix: `playBookChapter` passes the FULL text + baseOffset, and
+    `speak()` handles baseOffset exactly like the bookmark path (full-text
+    pieces/activeSpeechText, the engine speaks the suffix,
+    engineSpeechOffset = full-text start) — the contract `playFrom` already
+    followed. Device after the fix: `persistBookmark chars=7606
+    textLen=31200` — full-text hash + full-text position, consistent.
+  - **Device evidence (Waydroid, landscape, Phonon, chapter 8/29 of Think
+    Faster, 209-chunk chapter):** first RAL line after the fix:
+    `vh=695 target=1197` → `after s=1197` (real viewport, real scroll);
+    screenshots at t≈0 / 60 s / 130 s of one narration show the sounding
+    sentence around the viewport CENTER with the chapter heading scrolled
+    off — `s` marched 1197 → 2005 → 2935 with every `after` equal to its
+    target, the highlight advancing at the true spoken rate (it had run
+    ahead before), and tall-paragraph centering using the measured h=180.
+    The temporary per-sentence logging is REMOVED (the clean build greps
+    0 "RAL:" lines during a 50 s narration) — no 400-entry ring-buffer
+    flood during long listens. Clean APK reinstalled and re-passed
+    (highlight centered at 50 s).
+  - Evidence: 424 tests / 0 failures / 0 errors; `-Psplits=true
+    assembleDebug` → app-x86_64-debug.apk (89.5 MB) +
+    app-arm64-v8a-debug.apk (82.6 MB).
+  - Note: the RAL-1 repro recipe (Contents jump) exercises the offset-0
+    path; this session ALSO drove the positionFraction path (rail Play
+    with a saved scroll fraction) — that is where bug (2) lived — so the
+    close-out covers both narration entry paths.
+  - Commits: this entry lands with the RAL-1 close-out commit (QUEUE.md
+    same-commit rule).
+
 - **2026-11-18 — Unit RAL-1: read-along follows the read text — CODE-COMPLETE
   (424/424 green, both split APKs built); device-verified for the surface
-  swap + early-chapter follow, ONE OPEN ITEM for the next session (the
-  deep-chapter follow).** User feedback (see User Feedback Pending). Two
-  parts, both against the iOS reference (`ReadAlongView.swift`,
-  `BookReaderView.swift:357-390`):
+  swap + early-chapter follow; the deep-chapter OPEN ITEM was CLOSED the
+  same day by Unit RAL-1 CLOSE-OUT (above).** User feedback (see User
+  Feedback Pending). Two parts, both against the iOS reference
+  (`ReadAlongView.swift`, `BookReaderView.swift:357-390`):
   - **RAL-1a — measured center-anchor auto-scroll in ReadAlongScreen.**
     The old estimate (paragraph index × fixed 56 dp) undershot tall
     paragraphs → the sounding sentence landed below the viewport ("far at
@@ -339,17 +402,12 @@ commit, `git push` after verify, and NO machine identifiers in any file.
     the sounding sentence highlighted (epigraph: "—Mark Twain"; after a
     Contents jump to chapter 8 the highlight advanced paragraph by
     paragraph — screenshots sn-ral-r1/sn-step5/sn-step6). Bank full at 30 s
-    and holding (chunk 49/229, G2 healthy). **OPEN ITEM:** ~70 s into the
-    long chapter (chunk 46+, highlight deep in the text) the view had NOT
-    scrolled off the chapter top (scrollTop still 0, highlight below the
-    fold) — the center-follow engaged in the first screenful but the
-    deep-chapter case did not visibly scroll in the captured round. Next
-    session: repro = narrate chapter 8/29 of the Think Faster EPUB past
-    chunk ~10 and screenshot; suspect list = the overlay's
-    `LaunchedEffect(range?.first)` never re-firing past the first screenful
-    (state/key subtlety), or `onPlayedChars`/`engineSpeechOffset` mapping
-    putting the range outside the geometry map (range → null at depth).
-    Everything else about the unit is verified.
+    and holding (chunk 49/229, G2 healthy). **OPEN ITEM — CLOSED 2026-11-18
+    by Unit RAL-1 CLOSE-OUT (top of this section):** the deep-chapter
+    no-scroll was TWO bugs (the viewport was measured as the CONTENT
+    height, and the start-where-I-am path desynced the read-along tables);
+    both fixed and device-verified there. Everything else about the unit
+    is verified.
   - Commits: this entry lands with the RAL-1 commit (QUEUE.md same-commit
     rule).
 
@@ -1258,6 +1316,21 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 
 ## Session Handover
 
+- **2026-11-18 HANDOVER (Unit RAL-1 CLOSE-OUT — both read-along follow bugs
+  fixed and device-verified).** The unit is committed on `book-formats`
+  (see the RAL-1 CLOSE-OUT In-Flight entry for the two root causes and the
+  evidence): 424/424 green, both split APKs built, the x86_64 one
+  installed + passed on Waydroid (chapter 8/29 of Think Faster narrated
+  ~4 min across the verify rounds; the sounding sentence stayed around
+  the viewport center with the chapter heading scrolled off). Device
+  left: reader at chapter 8/29, Phonon selected + downloaded, read-along
+  pref ON, a mid-chapter-8 bookmark saved (chars=7606/31200, full-text
+  contract — resumes on the right sentence). Waydroid session left
+  RUNNING; read the IP from `waydroid status` next session (this session
+  it came up in ~20 s and adb authorized without a manual tap). Still
+  pending elsewhere, unchanged: the BOOK-F1 device pass (corpus recipe in
+  the BOOK-F1 In-Flight entry) and the `book-formats` → main merge after
+  the user confirms it.
 - **2026-11-15 HANDOVER (Unit G3 — chunk silence trim; user tests on their
   phone).** G3 rides on G2 (both in the tree, uncommitted — push waits for
   the user's audible verdict): **282/282 JVM green**, fresh
