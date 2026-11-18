@@ -68,6 +68,32 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
+0. **2026-11-18 — READER TITLE BAR NEVER HIDES (user): "make it able to
+   disappear the way the chapter bar manages to disappear when I tap the
+   screen and reappear when I tap back… right now it persists in both the
+   portrait and landscape mode."** Root cause found: the outer
+   `BookReaderScreen` Scaffold's `TopAppBar` sits OUTSIDE the
+   `chromeHidden` toggle that hides the chapter bar + bottom bar
+   (`chromeTap` from the WebView tap zone flips `chromeHidden` inside
+   EpubReader/DocReader; the title bar never participates). iOS hides the
+   nav bar on the same tap in every reader (`BookReaderView.swift`
+   `immersiveBars`, `BookPDFReaderView.swift:332-336` `immersiveBars.pdf`).
+   ADDRESSED as **Unit CHROME-1** (see In Flight).
+0. **2026-11-18 — READ-ALONG DOESN'T FOLLOW THE READ TEXT (user): "why
+   doesn't read along mode keep the currently being read text on the
+   screen — sometimes it's very far at the bottom… see what speechnotes
+   iOS does."** Two defects found against the iOS reference
+   (`ReadAlongView.swift` + `BookReaderView.swift:357-390`):
+   (1) Android's `ReadAlongScreen` auto-scrolls by a FIXED estimate
+   (`target * 56 dp`, `ReadAlongScreen.kt:77-78`) — tall paragraphs
+   undershoot and the read text lands below the viewport ("far at the
+   bottom"); iOS scrolls the actual paragraph to CENTER on every sentence
+   change (`proxy.scrollTo(id, anchor: .center)`). (2) The book readers
+   never had read-along at all — iOS swaps the EPUB/PDF surface for the
+   native ReadAlongView while the book narrates; Android left the WebView
+   with its fixed-speed teleprompter (`AUTO.speed` px/s), which knows
+   nothing about what is being spoken. ADDRESSED as **Unit RAL-1** (see
+   In Flight).
 0. **2026-11-15 — PHONON CHUNK-GAP DIAGNOSIS (user): "please diagnose that
    audible break between two chunks/sentences and recommend fixes"** —
    ADDRESSED as **Unit G2** (see In Flight): root cause was structural — the
@@ -276,6 +302,32 @@ commit, `git push` after verify, and NO machine identifiers in any file.
 **Release: v0.1.0 (prerelease)** — tag + notes + x86_64/arm64 release APKs.
 
 ## In Flight / Last Push
+
+- **2026-11-18 — Unit CHROME-1: the reader title bar joins the immersive
+  chrome — DONE (424/424 green, both split APKs built, Waydroid-verified
+  hide+restore on the EPUB and PDF readers in landscape).** User feedback
+  (see User Feedback Pending): the title bar persisted while the chapter
+  bar/bottom bar hid on tap. Changes: (1) `chromeHidden` hoisted from the
+  readers into `BookReaderScreen` and the outer `TopAppBar` wrapped in the
+  same AnimatedVisibility — one tap hides title+chapter+bottom bars, one
+  tap restores; (2) the PDF surface got the tap gesture iOS's
+  `immersiveBars.pdf` has (scroll-mode LazyColumn, the single-page image —
+  added to its existing double-tap-reset detector — and the loading
+  spinner), and the portrait bottom band hides with it too; (3) iOS-parity
+  `Haptics.tap` on every chrome toggle (the native-side toggle was
+  silent). **The device round caught a deeper bug: the readers' bridge
+  messages rode a MutableStateFlow, which DROPS a value equal to the
+  previous one — every second identical chromeTap (the restore tap!) and
+  consecutive pageTurn messages never reached the handler**, so the chrome
+  could hide but never come back by tapping (the user's "reappear" only
+  worked when another message — a relocation, a page turn — happened to
+  intervene). Replaced with an UNLIMITED Channel in both EpubReader and
+  DocReader (events, not state; `return@collect` → `continue`).
+  Evidence: 424/424; device screenshots: EPUB tap → title+chapter+bottom
+  bars all gone, tap → all restored (landscape 1920×1040); PDF tap →
+  title gone, tap → restored; portrait shares the same hoisted state and
+  AnimatedVisibility (not rotation-verified on the container — the user's
+  phone pass covers it). DOC reader wired identically to EPUB.
 
 - **2026-11-18 — Unit BOOK-F1 (CODE-COMPLETE on branch `book-formats`, 4
   commits, 424/424 JVM green, both split APKs built; DEVICE PASS PENDING —

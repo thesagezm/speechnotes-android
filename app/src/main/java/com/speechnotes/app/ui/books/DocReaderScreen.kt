@@ -84,7 +84,13 @@ import com.speechnotes.app.speech.SpeechState
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun DocReader(vm: SpeechnotesViewModel, book: Book) {
+internal fun DocReader(
+    vm: SpeechnotesViewModel,
+    book: Book,
+    // Hoisted above the title row (Unit CHROME-1): the WebView's chromeTap
+    // toggles the WHOLE reader chrome, title bar included.
+    chromeHidden: androidx.compose.runtime.MutableState<Boolean>,
+) {
     val appearance by vm.readerAppearance.collectAsState()
     var showToc by remember { mutableStateOf(false) }
     var showAppearance by remember { mutableStateOf(false) }
@@ -97,8 +103,8 @@ internal fun DocReader(vm: SpeechnotesViewModel, book: Book) {
     val playState by vm.player.state.collectAsState()
     val nowPlayingBookId by vm.player.nowPlayingBookId.collectAsState()
     val narratingThis = nowPlayingBookId == book.id && playState.isActive
+    val context = LocalContext.current
     var currentChapter by remember(book.id) { mutableStateOf(book.position - 1) }
-    var chromeHidden by remember(book.id) { mutableStateOf(false) }
     // The doc's chapter total is known at import (the manifest IS the parse's
     // own order) — no spine discovery delay like the epub reader's.
     val spineCount = book.spineCount ?: book.chapters.size
@@ -118,11 +124,14 @@ internal fun DocReader(vm: SpeechnotesViewModel, book: Book) {
     // load, so the warm-up here is not a hard gate.
     LaunchedEffect(book.id) { vm.servedDoc(book.id) }
 
-    val messageFlow = remember { kotlinx.coroutines.flow.MutableStateFlow<String?>(null) }
+    // Bridge messages are EVENTS (a Channel — see the EPUB reader's note):
+    // a MutableStateFlow dropped consecutive identical messages, so the
+    // second chromeTap never restored the chrome.
+    val messageFlow = remember { kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED) }
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     LaunchedEffect(Unit) {
-        messageFlow.collect { json ->
-            val obj = runCatching { org.json.JSONObject(json) }.getOrNull() ?: return@collect
+        for (json in messageFlow) {
+            val obj = runCatching { org.json.JSONObject(json) }.getOrNull() ?: continue
             when (obj.optString("type")) {
                 "relocated" -> {
                     val index = obj.optInt("index", 0)
@@ -130,7 +139,11 @@ internal fun DocReader(vm: SpeechnotesViewModel, book: Book) {
                     currentChapter = index
                     vm.saveBookPosition(book.id, index + 1, fraction, null)
                 }
-                "chromeTap" -> chromeHidden = !chromeHidden
+                "chromeTap" -> {
+                    // iOS onChromeTap fires Haptics.tap() with the toggle.
+                    com.speechnotes.app.ui.theme.Haptics.tap(context)
+                    chromeHidden.value = !chromeHidden.value
+                }
                 "error" -> {
                     LogStore.error("DocReader: ${obj.optString("message")}")
                     vm.showToast("Document reader error — see Logs")
@@ -160,7 +173,7 @@ internal fun DocReader(vm: SpeechnotesViewModel, book: Book) {
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             AnimatedVisibility(
-                visible = !chromeHidden && !barMinimized.value,
+                visible = !chromeHidden.value && !barMinimized.value,
                 enter = expandVertically(),
                 exit = shrinkVertically(),
             ) {
@@ -175,7 +188,7 @@ internal fun DocReader(vm: SpeechnotesViewModel, book: Book) {
         },
         bottomBar = {
             AnimatedVisibility(
-                visible = !chromeHidden,
+                visible = !chromeHidden.value,
                 enter = expandVertically(),
                 exit = shrinkVertically(),
             ) {
@@ -281,7 +294,7 @@ internal fun DocReader(vm: SpeechnotesViewModel, book: Book) {
                                 }
                             }
                             addJavascriptInterface(
-                                ReaderBridge { json -> messageFlow.value = json },
+                                ReaderBridge { json -> messageFlow.trySend(json) },
                                 "AndroidReaderBridge",
                             )
                             webViewRef.value = this

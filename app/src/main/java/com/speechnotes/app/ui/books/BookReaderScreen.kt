@@ -100,6 +100,7 @@ import androidx.webkit.WebViewAssetLoader
 import coil3.compose.AsyncImage
 import com.speechnotes.app.data.LogStore
 import com.speechnotes.app.data.SpeechnotesViewModel
+import com.speechnotes.app.ui.theme.Haptics
 import com.speechnotes.app.logic.AppFiles
 import com.speechnotes.app.model.Book
 import kotlinx.coroutines.Dispatchers
@@ -146,37 +147,51 @@ fun BookReaderScreen(vm: SpeechnotesViewModel, bookId: String, onBack: () -> Uni
     // sheet itself.
     val showPdfContents = remember(book.id) { mutableStateOf(false) }
 
+    // The immersive chrome toggle, hoisted ABOVE the title row (Unit CHROME-1,
+    // iOS immersiveBars parity): the readers' tap already hid the chapter bar
+    // and bottom bar, but this TopAppBar sat outside that state and persisted
+    // in both orientations — the title row now hides and reappears with the
+    // rest of the chrome. The WebView readers flip it via "chromeTap"; the
+    // PDF surface toggles it with its own tap gesture (iOS's onTapGesture).
+    val chromeHidden = remember(book.id) { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(book.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        book.author?.let {
-                            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            AnimatedVisibility(
+                visible = !chromeHidden.value,
+                enter = expandVertically(),
+                exit = shrinkVertically(),
+            ) {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(book.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            book.author?.let {
+                                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                            }
                         }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    // iOS carries the PDF's TOC in the navigation bar's
-                    // trailing slot — the same row as the title — because the
-                    // landscape bottom band is gone and portrait's chapter
-                    // bar has no room to spare. The EPUB/audiobook surfaces
-                    // keep their TOC in their own chrome (their iOS twins do
-                    // the same).
-                    if (book.format == Book.FORMAT_PDF) {
-                        IconButton(onClick = { showPdfContents.value = true }) {
-                            Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Contents")
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-            )
+                    },
+                    actions = {
+                        // iOS carries the PDF's TOC in the navigation bar's
+                        // trailing slot — the same row as the title — because the
+                        // landscape bottom band is gone and portrait's chapter
+                        // bar has no room to spare. The EPUB/audiobook surfaces
+                        // keep their TOC in their own chrome (their iOS twins do
+                        // the same).
+                        if (book.format == Book.FORMAT_PDF) {
+                            IconButton(onClick = { showPdfContents.value = true }) {
+                                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Contents")
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+                )
+            }
         },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
@@ -185,13 +200,13 @@ fun BookReaderScreen(vm: SpeechnotesViewModel, bookId: String, onBack: () -> Uni
                     com.speechnotes.app.ui.playback.KeepScreenOnSurface(
                         com.speechnotes.app.logic.ScreenAwakeSurface.EPUB_READER,
                     )
-                    EpubReader(vm, book)
+                    EpubReader(vm, book, chromeHidden)
                 }
                 book.format == Book.FORMAT_PDF -> {
                     com.speechnotes.app.ui.playback.KeepScreenOnSurface(
                         com.speechnotes.app.logic.ScreenAwakeSurface.PDF_READER,
                     )
-                    PdfReader(vm, book, showPdfContents)
+                    PdfReader(vm, book, showPdfContents, chromeHidden)
                 }
                 // The headless doc formats' own reader — NOT the epub.js one
                 // and NOT an EPUB conversion: the parsed BookDoc's chapters
@@ -200,7 +215,7 @@ fun BookReaderScreen(vm: SpeechnotesViewModel, bookId: String, onBack: () -> Uni
                     com.speechnotes.app.ui.playback.KeepScreenOnSurface(
                         com.speechnotes.app.logic.ScreenAwakeSurface.DOC_READER,
                     )
-                    DocReader(vm, book)
+                    DocReader(vm, book, chromeHidden)
                 }
                 else -> {
                     com.speechnotes.app.ui.playback.KeepScreenOnSurface(
@@ -222,7 +237,13 @@ internal class ReaderBridge(val onMessage: (String) -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
+private fun EpubReader(
+    vm: SpeechnotesViewModel,
+    book: Book,
+    // Hoisted above the title row (Unit CHROME-1): the WebView's chromeTap
+    // toggles the WHOLE reader chrome, title bar included.
+    chromeHidden: androidx.compose.runtime.MutableState<Boolean>,
+) {
     val context = LocalContext.current
     val appearance by vm.readerAppearance.collectAsState()
     var showToc by remember { mutableStateOf(false) }
@@ -240,7 +261,6 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
     // has no saved toc rows.
     var hrefToc by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var currentChapter by remember(book.id) { mutableStateOf(book.position - 1) }
-    var chromeHidden by remember(book.id) { mutableStateOf(false) }
     // Total spine items, reported by reader.js on relocation. Drives the
     // chapter-stepper's disabled ends and the progress label.
     var spineCount by remember(book.id) { mutableStateOf(book.spineCount ?: 0) }
@@ -260,12 +280,17 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
         onDispose { vm.readingRecorder.end() }
     }
 
-    val messageFlow = remember { kotlinx.coroutines.flow.MutableStateFlow<String?>(null) }
+    // Bridge messages are EVENTS, not state: a MutableStateFlow here DROPPED
+    // any message equal to the previous one, so a second identical "chromeTap"
+    // (tap again to restore the chrome) or a consecutive "pageTurn" never
+    // reached the handler — the chrome would hide but never come back by
+    // tapping. A Channel delivers every message (Unit CHROME-1 device round).
+    val messageFlow = remember { kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED) }
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     LaunchedEffect(Unit) {
-        // Reader.js messages are handled on a JS thread; hop through state.
-        messageFlow.collect { json ->
-            val obj = runCatching { org.json.JSONObject(json) }.getOrNull() ?: return@collect
+        // Reader.js messages are handled on a JS thread; hop through the channel.
+        for (json in messageFlow) {
+            val obj = runCatching { org.json.JSONObject(json) }.getOrNull() ?: continue
             when (obj.optString("type")) {
                 "relocated" -> {
                     val index = obj.optInt("index", 0)
@@ -281,7 +306,7 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                 }
                 "toc" -> {
                     val items = ArrayList<Pair<String, String>>()
-                    val arr = obj.optJSONArray("items") ?: return@collect
+                    val arr = obj.optJSONArray("items") ?: continue
                     for (i in 0 until arr.length()) {
                         val item = arr.optJSONObject(i) ?: continue
                         val href = item.optString("href").takeIf { it.isNotBlank() } ?: continue
@@ -289,7 +314,12 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                     }
                     hrefToc = items
                 }
-                "chromeTap" -> chromeHidden = !chromeHidden
+                "chromeTap" -> {
+                    // iOS onChromeTap fires Haptics.tap() with the toggle;
+                    // the native-side toggle was silent here.
+                    Haptics.tap(context)
+                    chromeHidden.value = !chromeHidden.value
+                }
                 "pageTurn" -> {
                     val fn = if (obj.optString("dir") == "prev") "readerPrev" else "readerNext"
                     webViewRef.value?.evaluateJavascript("window.$fn && window.$fn();", null)
@@ -331,7 +361,7 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             AnimatedVisibility(
-                visible = !chromeHidden && !barMinimized.value,
+                visible = !chromeHidden.value && !barMinimized.value,
                 enter = expandVertically(),
                 exit = shrinkVertically(),
             ) {
@@ -346,7 +376,7 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
         },
         bottomBar = {
             AnimatedVisibility(
-                visible = !chromeHidden,
+                visible = !chromeHidden.value,
                 enter = expandVertically(),
                 exit = shrinkVertically(),
             ) {
@@ -429,7 +459,7 @@ private fun EpubReader(vm: SpeechnotesViewModel, book: Book) {
                                 return true
                             }
                         }
-                        addJavascriptInterface(ReaderBridge { json -> messageFlow.value = json }, "AndroidReaderBridge")
+                        addJavascriptInterface(ReaderBridge { json -> messageFlow.trySend(json) }, "AndroidReaderBridge")
                         webViewRef.value = this
                         val chapterParam = (book.position - 1).coerceAtLeast(0)
                         // lastCfi, not book.cfi: one relocation fresher, so a
@@ -1007,6 +1037,10 @@ private fun PdfReader(
     // Hoisted into the reader wrapper: the Contents sheet opens from the
     // title row's action (iOS toolbar parity), which lives above this screen.
     showOutline: androidx.compose.runtime.MutableState<Boolean>,
+    // Hoisted above the title row (Unit CHROME-1): a tap on the page surface
+    // toggles the whole reader chrome — title bar included (iOS
+    // BookPDFReaderView's immersiveBars.pdf onTapGesture parity).
+    chromeHidden: androidx.compose.runtime.MutableState<Boolean>,
 ) {
     val context = LocalContext.current
     var pageCount by remember(book.id) { mutableStateOf(0) }
@@ -1278,13 +1312,21 @@ private fun PdfReader(
     // pins .singlePageContinuous); otherwise the pinch-zoom/pan single page,
     // or the loading spinner until the first bitmap lands.
     val pdfSurface: @Composable () -> Unit = {
+        // The chrome toggle (Unit CHROME-1): a plain tap hides/restores the
+        // reader chrome. Drags still scroll (the tap detector only fires on
+        // an un-consumed up), pinch-zoom lives on the image itself below.
+        fun toggleChrome() {
+            Haptics.tap(context)
+            chromeHidden.value = !chromeHidden.value
+        }
         if (scrollMode.value && pageCount > 0) {
             LazyColumn(
                 state = listState,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier
                     .fillMaxSize()
-                    .onSizeChanged { surfaceWidthPx = it.width },
+                    .onSizeChanged { surfaceWidthPx = it.width }
+                    .pointerInput(book.id) { detectTapGestures { toggleChrome() } },
             ) {
                 items(count = pageCount, key = { it }) { index ->
                     val bmp = bitmaps[index]
@@ -1331,10 +1373,13 @@ private fun PdfReader(
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(pageIndex) {
-                            detectTapGestures(onDoubleTap = {
-                                zoom = 1f
-                                zoomOffset = Offset.Zero
-                            })
+                            detectTapGestures(
+                                onTap = { toggleChrome() },
+                                onDoubleTap = {
+                                    zoom = 1f
+                                    zoomOffset = Offset.Zero
+                                },
+                            )
                         }
                         .transformable(transformState)
                         .graphicsLayer(
@@ -1344,7 +1389,12 @@ private fun PdfReader(
                             translationY = zoomOffset.y,
                         ),
                 )
-            } ?: Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            } ?: Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(book.id) { detectTapGestures { toggleChrome() } },
+                contentAlignment = Alignment.Center,
+            ) {
                 androidx.compose.material3.CircularProgressIndicator()
             }
         }
@@ -1384,121 +1434,128 @@ private fun PdfReader(
                 // steppers, so page turning stays one tap away while the
                 // page gets the space back. PORTRAIT ONLY: in landscape this
                 // whole band is gone (iOS round 6) and the rail owns the
-                // collapse.
-                if (barMinimized.value) {
-                    com.speechnotes.app.ui.playback.MinimizedPlaybackPill(
-                        isPlaying = narratingThis && playState == SpeechState.SPEAKING,
-                        isGenerating = narratingThis && playState == SpeechState.GENERATING,
-                        isPlayEnabled = true,
-                        progressText = compactProgressLabel(playProgress, narratingThis && playState == SpeechState.GENERATING),
-                        onTogglePlay = {
-                            if (narratingThis) vm.player.toggle()
-                            else {
-                                val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
-                                vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
-                            }
-                        },
-                        onExpand = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, false) },
-                        onStepBack = { stepPage(-1) },
-                        onStepForward = { stepPage(1) },
-                        stepBackEnabled = pageIndex > 0,
-                        stepForwardEnabled = pageCount > 0 && pageIndex < pageCount - 1,
-                    )
-                } else {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceContainerLow),
-                    ) {
-                        Slider(
-                            value = if (pageCount > 1) pageIndex.toFloat() / (pageCount - 1) else 0f,
-                            onValueChange = {
-                                scrollToPage((it * (pageCount - 1).coerceAtLeast(0)).toInt())
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
-                        )
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            FilledTonalIconButton(
-                                onClick = { stepPage(-1) },
-                                enabled = pageIndex > 0,
-                                modifier = Modifier.size(40.dp),
-                            ) {
-                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous page", modifier = Modifier.size(20.dp))
-                            }
-                            Text(
-                                "Page ${pageIndex + 1} of $pageCount",
-                                style = MaterialTheme.typography.labelLarge,
-                                textAlign = TextAlign.Center,
-                                // Weighted, not min-width: a fixed 104dp label
-                                // plus six 48dp buttons overflowed 360dp
-                                // screens when the Stop button joined during
-                                // narration and pushed it (and the next
-                                // buttons) off the right edge.
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(horizontal = 4.dp),
-                            )
-                            FilledTonalIconButton(
-                                onClick = { stepPage(1) },
-                                enabled = pageIndex < pageCount - 1,
-                                modifier = Modifier.size(40.dp),
-                            ) {
-                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next page", modifier = Modifier.size(20.dp))
-                            }
-                            // Pause/resume the ongoing narration; start the
-                            // chain for the chapter containing the CURRENT
-                            // page — the text pick is pinned to that page
-                            // (SpeechPlayer honors the offset), not to
-                            // wherever the chapter's bookmark last landed.
-                            FilledIconButton(onClick = {
+                // collapse. The page-surface tap also hides it (Unit CHROME-1,
+                // iOS immersiveBars parity) — one tap restores it.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = !chromeHidden.value,
+                    enter = expandVertically(),
+                    exit = shrinkVertically(),
+                ) {
+                    if (barMinimized.value) {
+                        com.speechnotes.app.ui.playback.MinimizedPlaybackPill(
+                            isPlaying = narratingThis && playState == SpeechState.SPEAKING,
+                            isGenerating = narratingThis && playState == SpeechState.GENERATING,
+                            isPlayEnabled = true,
+                            progressText = compactProgressLabel(playProgress, narratingThis && playState == SpeechState.GENERATING),
+                            onTogglePlay = {
                                 if (narratingThis) vm.player.toggle()
                                 else {
                                     val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
                                     vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
                                 }
-                            }, modifier = Modifier.size(40.dp)) {
-                                Icon(
-                                    when {
-                                        narratingThis && playState == SpeechState.SPEAKING -> Icons.Default.Pause
-                                        narratingThis -> Icons.Default.Stop
-                                        else -> Icons.Default.PlayArrow
-                                    },
-                                    contentDescription = when {
-                                        narratingThis && playState == SpeechState.SPEAKING -> "Pause narration"
-                                        narratingThis -> "Cancel narration"
-                                        else -> "Listen from this page"
-                                    },
-                                    modifier = Modifier.size(20.dp),
-                                )
-                            }
-                            // The thin in-button spinner was near-invisible
-                            // on device; the Stop glyph during GENERATING
-                            // (tap = cancel) reads clearly.
-                            if (narratingThis && playState != SpeechState.GENERATING) {
-                                IconButton(onClick = { vm.player.stop() }, modifier = Modifier.size(40.dp)) {
-                                    Icon(Icons.Default.Stop, contentDescription = "Stop narration", modifier = Modifier.size(20.dp))
-                                }
-                            }
-                            // Collapse the transport to the slim pill — iOS
-                            // BookPlayerBar's chevron.down
-                            // (bookBarMinimized). Portrait only: in landscape
-                            // the trailing rail owns the collapse.
-                            IconButton(
-                                onClick = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, true) },
-                                modifier = Modifier.size(40.dp),
+                            },
+                            onExpand = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, false) },
+                            onStepBack = { stepPage(-1) },
+                            onStepForward = { stepPage(1) },
+                            stepBackEnabled = pageIndex > 0,
+                            stepForwardEnabled = pageCount > 0 && pageIndex < pageCount - 1,
+                        )
+                    } else {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceContainerLow),
+                        ) {
+                            Slider(
+                                value = if (pageCount > 1) pageIndex.toFloat() / (pageCount - 1) else 0f,
+                                onValueChange = {
+                                    scrollToPage((it * (pageCount - 1).coerceAtLeast(0)).toInt())
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                            )
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Icon(
-                                    Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Minimize playback controls",
-                                    modifier = Modifier.size(20.dp),
+                                FilledTonalIconButton(
+                                    onClick = { stepPage(-1) },
+                                    enabled = pageIndex > 0,
+                                    modifier = Modifier.size(40.dp),
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous page", modifier = Modifier.size(20.dp))
+                                }
+                                Text(
+                                    "Page ${pageIndex + 1} of $pageCount",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    textAlign = TextAlign.Center,
+                                    // Weighted, not min-width: a fixed 104dp label
+                                    // plus six 48dp buttons overflowed 360dp
+                                    // screens when the Stop button joined during
+                                    // narration and pushed it (and the next
+                                    // buttons) off the right edge.
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 4.dp),
                                 )
+                                FilledTonalIconButton(
+                                    onClick = { stepPage(1) },
+                                    enabled = pageIndex < pageCount - 1,
+                                    modifier = Modifier.size(40.dp),
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next page", modifier = Modifier.size(20.dp))
+                                }
+                                // Pause/resume the ongoing narration; start the
+                                // chain for the chapter containing the CURRENT
+                                // page — the text pick is pinned to that page
+                                // (SpeechPlayer honors the offset), not to
+                                // wherever the chapter's bookmark last landed.
+                                FilledIconButton(onClick = {
+                                    if (narratingThis) vm.player.toggle()
+                                    else {
+                                        val chapter = book.chapters.indexOfFirst { pageIndex in it.startPage..it.endPage }
+                                        vm.toggleBookChapter(book, if (chapter >= 0) chapter else 0, page = pageIndex)
+                                    }
+                                }, modifier = Modifier.size(40.dp)) {
+                                    Icon(
+                                        when {
+                                            narratingThis && playState == SpeechState.SPEAKING -> Icons.Default.Pause
+                                            narratingThis -> Icons.Default.Stop
+                                            else -> Icons.Default.PlayArrow
+                                        },
+                                        contentDescription = when {
+                                            narratingThis && playState == SpeechState.SPEAKING -> "Pause narration"
+                                            narratingThis -> "Cancel narration"
+                                            else -> "Listen from this page"
+                                        },
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                                // The thin in-button spinner was near-invisible
+                                // on device; the Stop glyph during GENERATING
+                                // (tap = cancel) reads clearly.
+                                if (narratingThis && playState != SpeechState.GENERATING) {
+                                    IconButton(onClick = { vm.player.stop() }, modifier = Modifier.size(40.dp)) {
+                                        Icon(Icons.Default.Stop, contentDescription = "Stop narration", modifier = Modifier.size(20.dp))
+                                    }
+                                }
+                                // Collapse the transport to the slim pill — iOS
+                                // BookPlayerBar's chevron.down
+                                // (bookBarMinimized). Portrait only: in landscape
+                                // the trailing rail owns the collapse.
+                                IconButton(
+                                    onClick = { com.speechnotes.app.ui.playback.setBookBarMinimized(vm, true) },
+                                    modifier = Modifier.size(40.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.KeyboardArrowDown,
+                                        contentDescription = "Minimize playback controls",
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
                             }
                         }
                     }
