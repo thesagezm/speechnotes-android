@@ -1190,119 +1190,130 @@ private fun MarkdownPreview(markdown: String, noteId: String, blockSpacing: Doub
             .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
-        blocks.forEach { block ->
-            when (block) {
-                is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Heading -> {
-                    val style = when (block.level) {
-                        1 -> MaterialTheme.typography.headlineLarge
-                        2 -> MaterialTheme.typography.headlineMedium
-                        else -> MaterialTheme.typography.headlineSmall
+        // The preview was the one surface nothing could be copied out of:
+        // the edit field had its SelectionContainer, the rendered blocks
+        // sat outside one, so long-press did nothing there (the Linux
+        // audit’s finding #3, mirrored on Android). Wrapping the block list
+        // puts every paragraph, heading, list item, quote, code block and
+        // table cell into ONE selection — long-press starts it, the system
+        // toolbar offers Copy. Image tap-to-zoom keeps working (selection
+        // only claims long-press and handle drags), and the zoomed overlay
+        // renders outside the wrap, below.
+        SelectionContainer {
+            blocks.forEach { block ->
+                when (block) {
+                    is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Heading -> {
+                        val style = when (block.level) {
+                            1 -> MaterialTheme.typography.headlineLarge
+                            2 -> MaterialTheme.typography.headlineMedium
+                            else -> MaterialTheme.typography.headlineSmall
+                        }
+                        MarkdownStyledText.Text(
+                            block.text,
+                            style = style.copy(fontWeight = HeadingWeight(block.level)),
+                        )
+                        Spacer(Modifier.height(6.dp))
                     }
-                    MarkdownStyledText.Text(
-                        block.text,
-                        style = style.copy(fontWeight = HeadingWeight(block.level)),
-                    )
-                    Spacer(Modifier.height(6.dp))
-                }
-                is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Paragraph -> {
-                    // Inline images inside a paragraph were silently dropped
-                    // before: the block carried the whole line and only a
-                    // standalone `![alt](url)` block ever became an Image.
-                    MarkdownTextBlock(
-                        text = block.text,
-                        noteId = noteId,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            lineHeight = MaterialTheme.typography.bodyLarge.fontSize * 1.4f * lineSpacing.toFloat(),
-                        ),
-                        lineSpacing = lineSpacing,
-                        onZoom = { model, label -> zoomed = model; zoomedLabel = label },
-                    )
-                    Spacer(Modifier.height((10 * blockSpacing).dp))
-                }
-                is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.BulletList -> {
-                    block.items.forEach { item ->
+                    is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Paragraph -> {
+                        // Inline images inside a paragraph were silently dropped
+                        // before: the block carried the whole line and only a
+                        // standalone `![alt](url)` block ever became an Image.
                         MarkdownTextBlock(
-                            text = (if (item.isTask) (if (item.isDone) "☑ " else "☐ ") else "• ") + item.text,
+                            text = block.text,
                             noteId = noteId,
-                            style = MaterialTheme.typography.bodyLarge,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                lineHeight = MaterialTheme.typography.bodyLarge.fontSize * 1.4f * lineSpacing.toFloat(),
+                            ),
                             lineSpacing = lineSpacing,
-                            indentDp = (item.level * 16).dp,
                             onZoom = { model, label -> zoomed = model; zoomedLabel = label },
                         )
+                        Spacer(Modifier.height((10 * blockSpacing).dp))
                     }
-                    Spacer(Modifier.height((10 * blockSpacing).dp))
-                }
-                is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.OrderedList -> {
-                    block.items.forEachIndexed { i, item ->
-                        MarkdownTextBlock(
-                            text = "${i + 1}. " + (if (item.isTask) (if (item.isDone) "☑ " else "☐ ") else "") + item.text,
-                            noteId = noteId,
-                            style = MaterialTheme.typography.bodyLarge,
-                            lineSpacing = lineSpacing,
-                            indentDp = (item.level * 16).dp,
-                            onZoom = { model, label -> zoomed = model; zoomedLabel = label },
-                        )
-                    }
-                    Spacer(Modifier.height((10 * blockSpacing).dp))
-                }
-                is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Quote -> {
-                    MarkdownTextBlock(
-                        text = block.text,
-                        noteId = noteId,
-                        style = MaterialTheme.typography.bodyLarge,
-                        lineSpacing = lineSpacing,
-                        onZoom = { model, label -> zoomed = model; zoomedLabel = label },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 12.dp)
-                            .background(
-                                MaterialTheme.colorScheme.surfaceContainerHighest,
-                                RoundedCornerShape(6.dp),
-                            )
-                            .padding(10.dp),
-                    )
-                    Spacer(Modifier.height((10 * blockSpacing).dp))
-                }
-                is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Code -> {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            block.language?.takeIf { it.isNotBlank() }?.let { lang ->
-                                Text(
-                                    lang,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Spacer(Modifier.height(6.dp))
-                            }
-                            MarkdownStyledText.Text(
-                                block.text,
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                ),
+                    is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.BulletList -> {
+                        block.items.forEach { item ->
+                            MarkdownTextBlock(
+                                text = (if (item.isTask) (if (item.isDone) "☑ " else "☐ ") else "• ") + item.text,
+                                noteId = noteId,
+                                style = MaterialTheme.typography.bodyLarge,
+                                lineSpacing = lineSpacing,
+                                indentDp = (item.level * 16).dp,
+                                onZoom = { model, label -> zoomed = model; zoomedLabel = label },
                             )
                         }
+                        Spacer(Modifier.height((10 * blockSpacing).dp))
                     }
-                    Spacer(Modifier.height((10 * blockSpacing).dp))
-                }
-                is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Image -> {
-                    NoteImage(
-                        alt = block.alt,
-                        url = block.url,
-                        noteId = noteId,
-                        onZoom = { model, label -> zoomed = model; zoomedLabel = label },
-                    )
-                    Spacer(Modifier.height((10 * blockSpacing).dp))
-                }
-                is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Table -> {
-                    MarkdownTable(block.headers, block.rows)
-                    Spacer(Modifier.height((10 * blockSpacing).dp))
-                }
-                is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Divider -> {
-                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.OrderedList -> {
+                        block.items.forEachIndexed { i, item ->
+                            MarkdownTextBlock(
+                                text = "${i + 1}. " + (if (item.isTask) (if (item.isDone) "☑ " else "☐ ") else "") + item.text,
+                                noteId = noteId,
+                                style = MaterialTheme.typography.bodyLarge,
+                                lineSpacing = lineSpacing,
+                                indentDp = (item.level * 16).dp,
+                                onZoom = { model, label -> zoomed = model; zoomedLabel = label },
+                            )
+                        }
+                        Spacer(Modifier.height((10 * blockSpacing).dp))
+                    }
+                    is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Quote -> {
+                        MarkdownTextBlock(
+                            text = block.text,
+                            noteId = noteId,
+                            style = MaterialTheme.typography.bodyLarge,
+                            lineSpacing = lineSpacing,
+                            onZoom = { model, label -> zoomed = model; zoomedLabel = label },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 12.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    RoundedCornerShape(6.dp),
+                                )
+                                .padding(10.dp),
+                        )
+                        Spacer(Modifier.height((10 * blockSpacing).dp))
+                    }
+                    is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Code -> {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                        ) {
+                            Column(Modifier.padding(12.dp)) {
+                                block.language?.takeIf { it.isNotBlank() }?.let { lang ->
+                                    Text(
+                                        lang,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                                MarkdownStyledText.Text(
+                                    block.text,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    ),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height((10 * blockSpacing).dp))
+                    }
+                    is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Image -> {
+                        NoteImage(
+                            alt = block.alt,
+                            url = block.url,
+                            noteId = noteId,
+                            onZoom = { model, label -> zoomed = model; zoomedLabel = label },
+                        )
+                        Spacer(Modifier.height((10 * blockSpacing).dp))
+                    }
+                    is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Table -> {
+                        MarkdownTable(block.headers, block.rows)
+                        Spacer(Modifier.height((10 * blockSpacing).dp))
+                    }
+                    is com.speechnotes.app.logic.MarkdownText.MarkdownBlock.Divider -> {
+                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    }
                 }
             }
         }

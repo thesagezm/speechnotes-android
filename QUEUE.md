@@ -81,6 +81,36 @@ Handover ("HARRY1 CLOSE-OUT").
 
 ## User Feedback Pending
 
+0. **2026-11-20 — CONTEXT MENUS / COPY-PASTE AUDIT (user):** the user pasted
+   the Linux app's assessment (GTK right-click menus are speak-only; no
+   copy/cut/paste anywhere) and asked **"this is for linux but what is
+   missing for android"**. ADDRESSED in chat the same day (assessment only —
+   no code, no commit, HARRY1-close-out precedent). Findings: Compose gives
+   the long-press selection toolbar natively on every TextField (editor body,
+   title, search, dialogs, settings), the EPUB/DOC WebView carries the system
+   selection action mode (reader.js deliberately keeps selections out of the
+   chrome toggle), notebooks already have rename/delete UI, and note rows
+   already have a long-press menu — so Android is AHEAD of Linux on those.
+   The genuine Android gaps from the same audit: (A1) the markdown PREVIEW is
+   not wrapped in SelectionContainer → nothing in the preview is copyable
+   (`NoteEditorScreen.kt:1181`, the only SelectionContainer is the edit field
+   at :1146); (A2) read-along rows are plain clickable Text → tap-a-paragraph
+   speaks (playFromCurrent) but a passage cannot be copied
+   (`ReadAlongScreen.kt:164`); (A3) PDF pages are bitmaps → no copy path at
+   all, though the text layer/OCR text exists internally (a "Copy chapter
+   text" row in the Contents sheet is the cheap fill); (A4) the notes
+   long-press menu still lacks Delete + Share (inline icons only; also no
+   Rename) — `NotesListScreen.kt:575-601`; (A5) book cards have NO long-press
+   menu — the detail sheet covers Read/Send/Delete but "Add a goal" is
+   missing (state-report P2); (A6) EPUB long-press-copy must be device-verified
+   once (reader.js code looks correct; tap zones on). Linux bug #8 (open
+   gesture accepts every button) has no Android analogue — Compose
+   Card(onClick) only fires on primary taps. User said **start** → A1 shipped
+   as **Unit SEL-1** the same day (see Completed Units, Waydroid-verified
+   end-to-end). Remaining, in order: A2 read-along copy (SEL-2), A4 notes
+   menu Delete+Share (MENU-1), A5 book long-press + Add-a-goal (BOOK-1), A3
+   PDF copy chapter text (PDF-COPY), A6 EPUB long-press-copy device verify
+   (EPUB-VERIFY).
 0. **2026-11-18/19 — NANO EDGE TTS (user): "implement nano-edge-tts as part
    of the speech engines… fork/copy extensively from speechnotes-linux (not
    [linux-]rust)".** ADDRESSED as **Units NANO-1 + NANO-2** (see In Flight):
@@ -1668,6 +1698,39 @@ commit, `git push` after verify, and NO machine identifiers in any file.
   a container restart also clears it (app data survives, per Ron's note).
 
 ## Completed Units
+
+- **2026-11-20 — Unit SEL-1: the markdown preview is selectable — Copy out
+  of the reading view — DONE (440/440 green, both split APKs built,
+  Waydroid-verified end-to-end).** First unit from the 2026-11-20
+  context-menu/copy-paste audit (User Feedback Pending top item, gap A1).
+  The preview was the one surface nothing could be copied out of — the edit
+  field had its SelectionContainer, the rendered blocks sat outside one, so
+  long-press did nothing there (the Linux audit's finding #3, mirrored on
+  Android). Change: MarkdownPreview's block list (headings, paragraphs,
+  lists, quotes, code blocks, table cells) is now wrapped in ONE
+  SelectionContainer inside the scroll column (NoteEditorScreen.kt,
+  MarkdownPreview) — long-press starts a selection, the system toolbar
+  offers Copy / Select all, and the selection spans blocks (one container,
+  not per-block). Image tap-to-zoom keeps working (selection only claims
+  long-press/handle drags) and the zoomed overlay renders outside the wrap.
+  Image-bearing notes were not exercised on the container (none exists
+  there); the safety is structural — SelectionContainer does not consume
+  taps.
+  **Device evidence (Waydroid, landscape):** open the markdown scratch note
+  → preview → long-press on body text → selection handles + Copy/Select all
+  toolbar; Copy → switch to edit → Paste → the pasted word ("verification")
+  appeared in the note text = the clipboard round-trip proven; Select all →
+  the whole preview highlights as ONE selection with a bare Copy chip; the
+  note text was restored to its original 12 words afterward. Logcat clean
+  through all flows (only container noise: OpenGLRenderer/cpufreq).
+  `testDebugUnitTest` → **440/440**; `-Psplits=true assembleDebug` →
+  app-x86_64-debug.apk (89.3 MB) + app-arm64-v8a-debug.apk (82.4 MB).
+  **Observed pre-existing, NOT this unit:** the preview's first paragraph
+  renders overlapping the heading in this note — cosmetic, unrelated to
+  selection (SelectionContainer is gesture-only; no layout path touched);
+  noted for a polish unit. Next: SEL-2 (read-along copy), MENU-1 (notes
+  menu Delete+Share), BOOK-1 (book long-press + Add-a-goal), PDF-COPY,
+  EPUB-VERIFY.
 
 - **2026-11-09 — RELEASE v0.1.5 (prerelease) PUBLISHED.** Tag `v0.1.5` on the
   integration commit; GitHub prerelease carries `Speechnotes-0.1.5-arm64-v8a-
